@@ -90,8 +90,12 @@ await startup(idea="write a cli blackjack game") # blackjack: 二十一点
 
 
 ## 补充
+<details>
+  <summary>协程与异步IO</summary>
+  **[协程与异步IO](https://www.liujiangblog.com/course/python/83)**
+  > **协程，又称微线程，英文名`Coroutine`**，是运行在单线程中的“并发”，协程相比多线程的一大优势就是省去了多线程之间的切换开销，获得了更高的运行效率。Python中的异步IO模块asyncio就是基本的协程模块。
 
-+ **[协程与异步IO](https://www.liujiangblog.com/course/python/83)**
+
 
    > **协程，又称微线程，英文名`Coroutine`**，是运行在单线程中的“并发”，协程相比多线程的一大优势就是省去了多线程之间的切换开销，获得了更高的运行效率。Python中的异步IO模块asyncio就是基本的协程模块。
 
@@ -211,7 +215,7 @@ await startup(idea="write a cli blackjack game") # blackjack: 二十一点
 
    > 运行循环有两种方法：一是调用`run_until_complete()`方法，二是调用`run_forever()`方法。`run_until_complete()`内置`add_done_callback`回调函数，`run_forever()`则可以自定义`add_done_callback()`
 
-
+</details>
 
 # Chapter 2: Agent
 
@@ -242,5 +246,4 @@ What is Agent: according to MG
 ![](https://docs.deepwisdom.ai/main/assets/agent_run_flowchart.6c04f3a2.png)
 
 > **在MetaGPT内 `Role` 类是智能体的逻辑抽象**
-
 
