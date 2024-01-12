@@ -93,10 +93,7 @@ await startup(idea="write a cli blackjack game") # blackjack: 二十一点
 <details>
   <summary>协程与异步IO</summary>
   **[协程与异步IO](https://www.liujiangblog.com/course/python/83)**
-  > **协程，又称微线程，英文名`Coroutine`**，是运行在单线程中的“并发”，协程相比多线程的一大优势就是省去了多线程之间的切换开销，获得了更高的运行效率。Python中的异步IO模块asyncio就是基本的协程模块。
-
-
-
+  
    > **协程，又称微线程，英文名`Coroutine`**，是运行在单线程中的“并发”，协程相比多线程的一大优势就是省去了多线程之间的切换开销，获得了更高的运行效率。Python中的异步IO模块asyncio就是基本的协程模块。
 
    > **进程/线程：操作系统提供的一种并发处理任务的能力。**
