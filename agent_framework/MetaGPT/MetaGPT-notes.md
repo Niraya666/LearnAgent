@@ -554,7 +554,9 @@ class SimpleCoder(Role):
    ![436ebc22-98d4-41eb-a825-9297feb7b429.png](./image/436ebc22-98d4-41eb-a825-9297feb7b429.png)
 
 Before running the code, create a config folder in the path where the code will be executed, and place the config.yaml file containing information such as the OpenAI API key into it.
+
 code: [simple coder](./code/agent101_simple_coder.ipynb)
+
 code: [tutorial Assistant & homework](./code/agent101_TutorialAssistant.ipynb)
 
 
