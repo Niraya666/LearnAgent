@@ -574,7 +574,7 @@ action： **从外界信息源中搜集信息**和**对搜集得到的信息进�
 
 
 
-![whiteboard_exported_image.png](./MetaGPT%20学习笔记-assets/whiteboard_exported_image.png)
+![whiteboard_exported_image.png](./image/whiteboard_exported_image.png)
 
 `metagpt.subscription`模块提供了`SubscriptionRunner`类
 
@@ -946,7 +946,7 @@ cron_trigger = GithubTrendingCronTrigger("0 10 * * *")
    # 启动异步测试
    await test_cron_trigger(cron_trigger)
    ```
-
+</details>
 
 
 ### Callback
