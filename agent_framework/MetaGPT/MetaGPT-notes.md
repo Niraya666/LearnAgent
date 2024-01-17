@@ -1026,7 +1026,7 @@ async def discord_callback(msg: Message):
 
 ![a0cb376d-6d24-4dff-8716-3b7b3632939d.png](./image/a0cb376d-6d24-4dff-8716-3b7b3632939d.png)
 
-huggingface daily paper watcher: [HFDailyPaperWatcher](/code/agent101_chapter4_homework_HFDailyPaperWatcher.ipynb)
+huggingface daily paper watcher: [HFDailyPaperWatcher](./code/agent101_chapter4_homework_HFDailyPaperWatcher.ipynb)
 
 
 
