@@ -1,5 +1,5 @@
 # MetaGPT 学习笔记
-
+[toc]
 # Chapter 1: Introduction 
 
 <https://docs.deepwisdom.ai/main/zh/guide/get_started/introduction.html>
