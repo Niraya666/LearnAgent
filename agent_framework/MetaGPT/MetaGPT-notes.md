@@ -561,3 +561,477 @@ code: [tutorial Assistant & homework](./code/agent101_TutorialAssistant.ipynb)
 
 
 # Chapter 4: 订阅智能体
+
+## Introduction
+
+定义：
+
+> 让Agent为我们关注某些想关注的信息，当有我们关注的事件发生时，Agent获取信息并进行处理，然后通过一些如邮件、微信、discord等通知渠道将处理后的信息发送给我们，我们将这类Agent称为订阅智能体
+
+action： **从外界信息源中搜集信息**和**对搜集得到的信息进行总结**
+
+额外功能： **定时运行**的功能和发送到**通知渠道**的功能
+
+
+
+![whiteboard_exported_image.png](./MetaGPT%20学习笔记-assets/whiteboard_exported_image.png)
+
+`metagpt.subscription`模块提供了`SubscriptionRunner`类
+
+```python
+>>> import asyncio
+>>> from metagpt.subscription import SubscriptionRunner
+>>> from metagpt.roles import Searcher
+>>> from metagpt.schema import Message
+
+>>> async def trigger():
+...     while True:
+...         yield Message("the latest news about OpenAI")
+...         await asyncio.sleep(3600 * 24)
+
+>>> async def callback(msg: Message):
+...     print(msg.content)
+
+>>> async def main():
+...     pb = SubscriptionRunner()
+...     await pb.subscribe(Searcher(), trigger(), callback)
+...     await pb.run()
+
+>>> asyncio.run(main())
+```
+
+> 订阅智能体的实现主要有3个要素，分别是Role、Trigger、Callback，即智能体本身、触发器、数据回调
+
+
+
+## 实现OOS 订阅智能体
+
+OSS(Open Source Software)
+基本概念补充
+<details>
+  <summary>HTML</summary>
+  HTML（超文本标记语言）是用于创建网页的标准标记语言。它的基本结构包括以下几个部分：
+
+  1. **文档类型声明（Doctype）**：它声明了文档的类型和 HTML 的版本，例如 `<!DOCTYPE html>` 表明该文档是 HTML5。
+
+  2. **HTML 标签**：文档开始和结束的地方，分别用 `<html>` 和 `</html>` 表示。
+
+  3. **头部（Head）区域**：
+
+     - `<head>` 标签包含了文档的元数据，如字符集定义 `<meta charset="UTF-8">`。
+
+     - `<title>` 标签定义了文档的标题，显示在浏览器的标题栏或页面的标签页上。
+
+     - 链接外部资源，如样式表 `<link rel="stylesheet" href="styles.css">`。
+
+  4. **主体（Body）区域**：这是文档的主要内容部分，使用 `<body>` 和 `</body>` 标签包裹。
+
+     - **文本内容**：如 `<h1>` 到 `<h6>` 用于标题，`<p>` 用于段落。
+
+     - **链接**：`<a href="url">` 用来创建超链接。
+
+     - **图像**：`<img src="image.jpg" alt="描述">` 用于嵌入图像。
+
+     - **列表**：有序列表 `<ol>` 和无序列表 `<ul>`，列表项用 `<li>` 表示。
+
+     - **表格**：由 `<table>` 创建，内部包含 `<tr>`（行）、`<td>`（单元格）等元素。
+
+     - **表单**：`<form>` 用于收集用户输入，内部包含输入字段 `<input>`、按钮 `<button>` 等。
+
+  5. **注释**：使用 `<!-- 注释内容 -->` 来添加注释，注释不会显示在浏览器中。
+
+  HTML 包含更多的标签和属性，可以用来创建丰富和动态的网页内容。
+</details> 
+<details>
+    <summary>CSS</summary>
+
+  CSS（层叠样式表）在 HTML 中的作用主要是用来定义网页的样式。它提供了一种强大的方式来控制网页的布局和外观。以下是 CSS 在 HTML 中的几个关键作用：
+
+  1. **格式化文本**：CSS 可以改变文本的大小、颜色、字体、行间距等。例如，可以指定段落文字的字体大小和颜色。
+
+  2. **布局控制**：CSS 使得创建复杂的页面布局成为可能。它可以控制元素的位置、大小、外边距（margin）、内边距（padding）等。例如，可以用 CSS 设定两列或三列布局。
+
+  3. **页面响应式设计**：通过媒体查询（Media Queries），CSS 可以根据不同的屏幕大小和设备特性应用不同的样式规则。这对于制作在手机、平板电脑和桌面电脑上都能良好显示的网页非常重要。
+
+  4. **网页美化**：CSS 提供了丰富的视觉效果，如背景颜色和图像、边框样式、阴影效果、动画等。这些都可以用来增强网页的视觉吸引力和用户体验。
+
+  5. **页面一致性**：通过使用外部样式表，可以确保整个网站的一致性。对外部样式表的任何修改都会在所有连接到该样式表的 HTML 页面上反映出来，使得维护和更新网站样式更加高效。
+
+  6. **与 HTML 的分离**：将样式信息与 HTML 结构分离，使得 HTML 代码更加清晰，也更容易维护和管理。
+
+  在 HTML 中，可以通过以下三种方式来应用 CSS：
+
+  - **内联样式**：直接在 HTML 元素上使用 `style` 属性。
+
+  - **内部样式表**：在 HTML 文档的 `<head>` 部分使用 `<style>` 标签。
+
+  - **外部样式表**：使用 `<link>` 标签链接到一个外部的 CSS 文件。
+
+  CSS 的强大和灵活性使其成为网页设计和前端开发中不可或缺的工具。
+</details>
+
+<details>
+  <summary>aiohttp</summary>
+
+  `aiohttp` 是一个基于异步 I/O（输入/输出）的 Python 库，用于客户端和服务器端的 HTTP 网络通信。使用 `aiohttp` 可以高效地处理大量并发的 HTTP 请求。下面是使用 `aiohttp` 发起网络请求的基本步骤：
+
+  ### 安装 aiohttp
+
+  首先，确保安装了 `aiohttp` 库。如果还没有安装，可以通过 pip 进行安装：
+
+  ```bash
+  pip install aiohttp
+  ```
+
+  ### 异步 HTTP 客户端的基本用法
+
+  #### 导入库
+
+  ```python
+  import aiohttp
+  import asyncio
+  ```
+
+  #### 发起 GET 请求
+
+  使用 `aiohttp.ClientSession()` 创建一个会话，然后使用 `session.get(url)` 发起 GET 请求。
+
+  ```python
+  async def fetch(session, url):
+      async with session.get(url) as response:
+          return await response.text()
+  
+  async def main():
+      async with aiohttp.ClientSession() as session:
+          html = await fetch(session, 'http://python.org')
+          print(html)
+  
+  asyncio.run(main())
+  ```
+
+  #### 发起 POST 请求
+
+  类似于 GET 请求，使用 `session.post(url, data=...)` 发起 POST 请求。
+
+  ```python
+  async def post_data(session, url, data):
+      async with session.post(url, data=data) as response:
+          return await response.text()
+  
+  async def main():
+      async with aiohttp.ClientSession() as session:
+          data = {'key': 'value'}
+          response = await post_data(session, 'http://httpbin.org/post', data)
+          print(response)
+  
+  asyncio.run(main())
+  ```
+
+  #### 处理异常
+
+  在网络请求过程中，处理可能出现的异常是一个好习惯。
+
+  ```python
+  async def fetch_with_error_handling(session, url):
+      try:
+          async with session.get(url) as response:
+              return await response.text()
+      except aiohttp.ClientError as e:
+          print(f"A network-related error occurred: {e}")
+      except Exception as e:
+          print(f"An unexpected error occurred: {e}")
+  
+  # 使用此函数与上述示例中的 main 函数一起
+  ```
+
+  ### 注意事项
+
+  - 使用异步代码时，所有与网络请求相关的操作都应该在 `async` 函数内执行。
+
+  - `asyncio.run(main())` 是启动异步程序的标准方式。
+
+  - 确保在异步函数中处理异常，以避免程序意外崩溃。
+
+  这些是 `aiohttp` 的基本用法。通过它，你可以高效地在 Python 中处理 HTTP 请求。由于其异步特性，`aiohttp` 特别适用于需要高并发的应用场景。
+</details>
+
+
+### Role: OSSWatcher 实现
+
+定位：**帮我们关注并分析热门的开源项目，当有相关信息时将信息推送给我们，这里需要确定让 OSS 从哪个网页获取信息**
+
+两个action：**爬取热门开源项目**和**分析热门开源项目**。
+
+#### GitHub Trending爬取
+
+参考：<https://chat.openai.com/share/6c8046d3-e363-40bd-9412-8d859e7b3854>
+
+#### GitHub Trending总结
+
+````python
+TRENDING_ANALYSIS_PROMPT = """# Requirements
+You are a GitHub Trending Analyst, aiming to provide users with insightful and personalized recommendations based on the latest
+GitHub Trends. Based on the context, fill in the following missing information, generate engaging and informative titles, 
+ensuring users discover repositories aligned with their interests.
+
+# The title about Today's GitHub Trending
+## Today's Trends: Uncover the Hottest GitHub Projects Today! Explore the trending programming languages and discover key domains capturing developers' attention. From ** to **, witness the top projects like never before.
+## The Trends Categories: Dive into Today's GitHub Trending Domains! Explore featured projects in domains such as ** and **. Get a quick overview of each project, including programming languages, stars, and more.
+## Highlights of the List: Spotlight noteworthy projects on GitHub Trending, including new tools, innovative projects, and rapidly gaining popularity, focusing on delivering distinctive and attention-grabbing content for users.
+---
+# Format Example
+
+```
+# [Title]
+
+## Today's Trends
+Today, ** and ** continue to dominate as the most popular programming languages. Key areas of interest include **, ** and **.
+The top popular projects are Project1 and Project2.
+
+## The Trends Categories
+1. Generative AI
+    - [Project1](https://github/xx/project1): [detail of the project, such as star total and today, language, ...]
+    - [Project2](https://github/xx/project2): ...
+...
+
+## Highlights of the List
+1. [Project1](https://github/xx/project1): [provide specific reasons why this project is recommended].
+...
+```
+
+---
+# Github Trending
+{trending}
+"""
+````
+
+
+
+#### OSSWatcher Role
+
+加入`CrawlOSSTrending` 和 `AnalysisOSSTrending` 两个action
+
+```python
+from metagpt.roles import Role
+
+class OssWatcher(Role):
+    def __init__(
+        self,
+        name="Codey",
+        profile="OssWatcher",
+        goal="Generate an insightful GitHub Trending analysis report.",
+        constraints="Only analyze based on the provided GitHub Trending data.",
+    ):
+        super().__init__(name, profile, goal, constraints)
+        self._init_actions([CrawlOSSTrending, AnalysisOSSTrending])
+        self._set_react_mode(react_mode="by_order")
+
+    async def _act(self) -> Message:
+        logger.info(f"{self._setting}: ready to {self._rc.todo}")
+        # By choosing the Action by order under the hood
+        # todo will be first SimpleWriteCode() then SimpleRunCode()
+        todo = self._rc.todo
+
+        msg = self.get_memories(k=1)[0] # find the most k recent messages
+        result = await todo.run(msg.content)
+
+        msg = Message(content=str(result), role=self.profile, cause_by=type(todo))
+        self._rc.memory.add(msg)
+        return msg
+```
+
+
+
+### Trigger
+
+使用crontab 实现定时触发
+
+使用`aiocron`我们可以直接使用cron的语法制定定时任务
+
+```python
+# 结合aiocron使用类的方式，来实现定时Trigger
+
+import time
+from aiocron import crontab
+from typing import Optional
+from pytz import BaseTzInfo
+from pydantic import BaseModel, Field
+from metagpt.schema import Message
+
+
+class OssInfo(BaseModel):
+    url: str
+    timestamp: float = Field(default_factory=time.time)
+
+
+class GithubTrendingCronTrigger():
+
+    def __init__(self, spec: str, tz: Optional[BaseTzInfo] = None, url: str = "https://github.com/trending") -> None:
+        self.crontab = crontab(spec, tz=tz)
+        self.url = url
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await self.crontab.next()
+        return Message(self.url, OssInfo(url=self.url))
+```
+
+```python
+# 创建 GithubTrendingCronTrigger 实例，指定每天 UTC 时间 10:00 AM 触发
+cron_trigger = GithubTrendingCronTrigger("0 10 * * *")
+```
+
+**思考题**
+<details>
+  <summary>思考1</summary>
+  如果需要榜单更新再推送，可以如何实现？
+
+   对之前的榜单数据用hash 函数计算hash值， 并保存在本地；
+
+   每一次`CrawlOSSTrending`计算一次hash值，比对前后hash值是否相等
+
+   即：
+
+   ```python
+   # 初始化变量
+   prev_hash = None
+   
+   # 无限循环，定时执行CrawlOSSTrending
+   while True:
+     # 调用函数CrawlOSSTrending以获取最新的榜单数据
+     msg_now = CrawlOSSTrending()
+   
+     # 计算当前数据的hash值
+     now_hash = hash(msg_now)
+   
+     # 比对前后hash值是否相等
+     if prev_hash is not None and prev_hash != now_hash:
+       # 如果hash不相同，则执行analysis
+       AnalysisOSSTrending(msg_now)
+   
+     # 将当前hash值存为“前一次的hash值”，以便下次循环时使用
+     prev_hash = now_hash
+   
+     # 等待一定时间后再次执行循环（时间根据实际情况设定）
+     Sleep(some_time_period)
+     
+   ```
+</details>
+<details>
+  <summary>思考2</summary>
+  Crontab的定时方式可能不是很方便进行调试，有什么方便调试的方法吗？
+
+   ```python
+   from pytz import timezone
+   ## test
+   
+   async def test_cron_trigger(cron_trigger):
+       async for message in cron_trigger:
+           print(message)
+           break  # 为了测试，我们在接收到第一个消息后就退出循环
+   
+   
+   
+   current_time = datetime.now()
+   target_time = current_time + timedelta(minutes=1)
+   cron_expression = target_time.strftime('%M %H %d %m %w')
+   print(cron_expression)
+   
+   # trigger_after 1 min
+   beijing_tz = timezone('Asia/Shanghai')  #获取北京时间的时区
+   cron_trigger = GithubTrendingCronTrigger(cron_expression, tz=beijing_tz)
+   
+   # 启动异步测试
+   await test_cron_trigger(cron_trigger)
+   ```
+
+
+
+### Callback
+
+实现agent将数据发送至Discord
+
+注册账号
+
+在[discord的开发者面板](https://discord.com/developers/applications)添加BOT
+
+将BOT添加到某个服务器中
+
+参考：
+
+<https://discordpy.readthedocs.io/en/stable/discord.html>
+
+<https://realpython.com/how-to-make-a-discord-bot-python/>
+
+token获取[discord readthedocs](https://discordpy.readthedocs.io/en/stable/discord.html)
+
+DISCORD_CHANNEL_ID： 注意**是频道ID不是服务器ID！**
+
+
+
+
+
+```python
+import os
+from environs import load_dotenv
+
+load_dotenv('.env')
+
+TOKEN = os.getenv('DISCORD_TOKEN')
+CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
+proxy = os.getenv('global_proxy')
+
+# callback
+import os
+import discord
+async def discord_callback(msg: Message):
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+
+    client = discord.Client(intents=intents, proxy=proxy)
+    token = os.environ["DISCORD_TOKEN"]
+    channel_id = int(os.environ["DISCORD_CHANNEL_ID"])
+
+    async with client:
+        await client.login(token)
+        channel = await client.fetch_channel(channel_id)
+        lines = []
+        for i in msg.content.splitlines():
+            if i.startswith(("# ", "## ", "### ")):
+                if lines:
+                    await channel.send("\n".join(lines))
+                    lines = []
+            lines.append(i)
+
+        if lines:
+            await channel.send("\n".join(lines))
+```
+
+效果：
+
+![截屏2024-01-15 19.01.25.png](./image/截屏2024-01-15%2019.01.25.png)
+
+
+
+## Code 实现
+
+完整OSS watcher代码实现: [ossWatcher](./code/agent101_ossWatcher.ipynb)
+
+
+
+### Homework
+
+![a0cb376d-6d24-4dff-8716-3b7b3632939d.png](./image/a0cb376d-6d24-4dff-8716-3b7b3632939d.png)
+
+huggingface daily paper watcher: [HFDailyPaperWatcher](/code/agent101_chapter4_homework_HFDailyPaperWatcher.ipynb)
+
+
+
+效果：
+
+![截屏2024-01-17 14.22.40.png](./image/截屏2024-01-17%2014.22.40.png)
+
+
