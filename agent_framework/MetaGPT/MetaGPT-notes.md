@@ -1,10 +1,10 @@
 # MetaGPT 学习笔记
 
 ## Table of Contents
-- [Chapter 1](# Chapter 1: Introduction)
-- [Chapter 2](# Chapter 2: Agent)
-- [Chapter 3](# Chapter 3: MetaGPT框架组件介绍)
-- [Chapter 4](# Chapter 4: 订阅智能体)
+- [Chapter 1](#chapter-1-introduction)
+- [Chapter 2](#chapter-2-agent)
+- [Chapter 3](#chapter3)
+- [Chapter 4](#chapter4)
 
 
 # Chapter 1: Introduction 
@@ -239,7 +239,7 @@ What is Agent: according to MG
 
 
 
-# Chapter 3: MetaGPT框架组件介绍
+# <a id="chapter3"></a>Chapter 3: MetaGPT框架组件介绍
 
 在MetaGPT看来，可以将智能体想象成环境中的数字人，其中
 
@@ -567,7 +567,7 @@ code: [simple coder](./code/agent101_simple_coder.ipynb)
 code: [tutorial Assistant & homework](./code/agent101_TutorialAssistant.ipynb)
 
 
-# Chapter 4: 订阅智能体
+# <a id="chapter4"></a>Chapter 4: 订阅智能体
 
 ## Introduction
 
