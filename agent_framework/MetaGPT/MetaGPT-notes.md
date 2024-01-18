@@ -1,5 +1,12 @@
 # MetaGPT 学习笔记
-[toc]
+
+## Table of Contents
+- [Chapter 1](# Chapter 1: Introduction)
+- [Chapter 2](# Chapter 2: Agent)
+- [Chapter 3](# Chapter 3: MetaGPT框架组件介绍)
+- [Chapter 4](# Chapter 4: 订阅智能体)
+
+
 # Chapter 1: Introduction 
 
 <https://docs.deepwisdom.ai/main/zh/guide/get_started/introduction.html>
@@ -1032,6 +1039,481 @@ huggingface daily paper watcher: [HFDailyPaperWatcher](./code/agent101_chapter4_
 
 效果：
 
-![截屏2024-01-17 14.22.40.png](./image/截屏2024-01-17%2014.22.40.png)
+![截屏2024-01-17 14.22.40.png](./image/截屏2024-01-18%2014.49.26.png)
 
+#### 1\. Fetch Daily paper 
+
+1. 首先爬取主页面获得每个paper的title和对应href
+
+   ```python
+   async def parse_main_page(html):
+       title_list = []
+       href_list = []
+       soup = BeautifulSoup(html, 'html.parser')
+       # 更新查找标签的逻辑以匹配当前网页结构
+       title_tags = soup.find_all('h3', class_='mb-1 text-lg font-semibold leading-[1.2] hover:underline peer-hover:underline md:text-2xl')
+       for title_tag in title_tags:
+           a_tag = title_tag.find('a')  # 标题内的<a>标签
+           if a_tag:
+               title = a_tag.text.strip()  # 清除空白字符得到标题文本
+               href = a_tag['href']  # 提取href属性
+               title_list.append(title)  # 添加标题到列表
+               href_list.append(href)  # 添加链接到列表
+       return title_list, href_list
+   ```
+
+2. 根据上一部获得的title和对应href， 遍历获取子页面的paper abstract 信息， 其中子页面url为 base_url+href
+
+   ```python
+   async def parse_sub_page(html):
+       soup = BeautifulSoup(html, 'html.parser')
+       abstract = soup.find('div', class_="pb-8 pr-4 md:pr-16").p.text
+       arxiv_url = soup.find('a', class_="btn inline-flex h-9 items-center", href=True)['href']
+       return abstract, arxiv_url
+   
+   async def main():
+       url = 'https://huggingface.co/papers'
+       base_url = 'https://huggingface.co'
+       repositories = []
+       try:
+           html = await fetch_html(url)
+           title_list, href_list = await parse_main_page(html)
+   
+           for title, href in zip(title_list, href_list):
+               repo_info = {}
+               repo_info['title'] = title
+               # repo_info['href'] = href
+               repositories.append(repo_info)
+               # print(title, href)
+               sub_html = await fetch_html(base_url + href)
+               abstract, arxiv_url = await parse_sub_page(sub_html)
+               # print(abstract, arxiv_url)
+               repo_info['abstract'] = abstract
+               repo_info['arxiv_url'] = arxiv_url
+               repositories.append(repo_info)
+           return repositories
+       except Exception as e:
+           print(f"An error occurred: {e}")
+   ```
+
+   这一步将获取当天所有paper信息， 并返回一个dict， 包含paper 的title， abstract， 和 Arxiv url
+
+   如下：
+
+   ```shell
+   [{'title': 'InstantID: Zero-shot Identity-Preserving Generation in Seconds',
+     'abstract': 'There has been significant progress in personalized image synthesis with\nmethods such as Textual Inversion, DreamBooth, and LoRA. Yet, their real-world\napplicability is hindered by high storage demands, lengthy fine-tuning\nprocesses, and the need for multiple reference images. Conversely, existing ID\nembedding-based methods, while requiring only a single forward inference, face\nchallenges: they either necessitate extensive fine-tuning across numerous model\nparameters, lack compatibility with community pre-trained models, or fail to\nmaintain high face fidelity. Addressing these limitations, we introduce\nInstantID, a powerful diffusion model-based solution. Our plug-and-play module\nadeptly handles image personalization in various styles using just a single\nfacial image, while ensuring high fidelity. To achieve this, we design a novel\nIdentityNet by imposing strong semantic and weak spatial conditions,\nintegrating facial and landmark images with textual prompts to steer the image\ngeneration. InstantID demonstrates exceptional performance and efficiency,\nproving highly beneficial in real-world applications where identity\npreservation is paramount. Moreover, our work seamlessly integrates with\npopular pre-trained text-to-image diffusion models like SD1.5 and SDXL, serving\nas an adaptable plugin. Our codes and pre-trained checkpoints will be available\nat https://github.com/InstantID/InstantID.',
+     'arxiv_url': 'https://arxiv.org/abs/2401.07519'},
+   ...
+   ]
+   ```
+
+#### 2\. Action
+
+将以上动作修改成`Action`：  `CrawlHuggingfaceDailyPaper`
+
+将当天paper整理成dict，用于下一步动作
+
+```python
+from metagpt.actions.action import Action
+from metagpt.config import CONFIG
+
+class CrawlHuggingfaceDailyPaper(Action):
+    """
+    This class specifically targets the daily papers section of the Huggingface website.
+    Its main functionality includes asynchronously fetching and parsing the latest research papers
+    published on Huggingface, extracting relevant details such as titles, abstracts, and arXiv URLs.
+    It can be utilized in applications where up-to-date research information from Huggingface
+    is required, making it a valuable tool for researchers and developers in AI and machine learning.
+    """
+
+    async def run(self, url: str = "https://huggingface.co/papers"):
+        async with aiohttp.ClientSession() as client:
+            async with client.get(url, proxy=CONFIG.global_proxy) as response:
+                response.raise_for_status()
+                html = await response.text()
+
+        title_list, href_list = await parse_main_page(html)
+
+        repositories = []
+        base_url = 'https://huggingface.co'
+
+        for title, href in zip(title_list, href_list):
+            repo_info = {'title': title}
+            sub_html = await fetch_html(base_url + href)
+            abstract, arxiv_url = await parse_sub_page(sub_html)
+            repo_info['abstract'] = abstract
+            repo_info['arxiv_url'] = arxiv_url
+
+            repositories.append(repo_info)
+
+        return repositories
+
+```
+
+接下来定义另一个action： SummaryDailyPaper， 将每一篇paper信息使用LLM进行改写： 
+
+- 修改成markdown 格式
+
+- 增加论文关键词提取
+
+````python
+from typing import Any
+PAPER_SUMMARY_PROMPT = """
+    Transform the given data about a research paper into a neat Markdown format. Also, identify and include five relevant keywords that best represent the core themes of the paper.
+    The provided data is:
+    ```
+    {data}
+    ```
+    Please create a markdown summary and suggest five keywords related to this paper.
+    """
+class SummaryDailyPaper(Action):
+
+    async def run(
+        self,
+        data: Any
+    ):
+        return await self._aask(PAPER_SUMMARY_PROMPT.format(data=data))
+````
+
+
+
+为什么不直接总结所有paper： **LLM上下文长度限制**
+
+
+
+#### 3\. Role
+
+接下来，定义一个角色`Role`: `DailyPaperWatcher`, 具备以上两个`Action`： `SummaryDailyPaper`,`CrawlHuggingfaceDailyPaper`
+
+最简单版本
+
+```python
+from typing import Dict, List
+from metagpt.utils.common import OutputParser
+from metagpt.roles import Role
+from metagpt.schema import Message
+from metagpt.logs import logger
+
+class DailyPaperWatcher(Role):
+    def __init__(
+        self,
+        name="Huggy",
+        profile="DailyPaperWatcher",
+        goal="Generate a summary of Huggingface daily papers.",
+        constraints="Only analyze based on the provided Huggingface daily papers.",
+    ):
+        super().__init__(name, profile, goal, constraints)
+        self._init_actions([CrawlHuggingfaceDailyPaper])
+        self._set_react_mode(react_mode="by_order")
+
+    
+    async def _act(self) -> Message:
+        logger.info(f"{self._setting}: ready to {self._rc.todo}")
+
+        todo = self._rc.todo
+
+        try:
+            msg = self.get_memories(k=1)[0]
+        except IndexError:
+            logger.error("No messages in memory")
+            return Message(content="Error: No messages in memory", role=self.profile)
+
+        try:
+            result = await todo.run(msg.content)
+            if isinstance(todo, CrawlHuggingfaceDailyPaper):
+                # 针对每篇论文创建并执行 SummaryDailyPaper 动作
+                logger.info(f"Preparing to summarize {len(result)} papers")
+                msg_content = ''
+                for paper in result:
+                    summary_action = SummaryDailyPaper(paper)
+                    summary_result = await summary_action.run(paper)
+                    summary_msg = Message(content=str(summary_result), role=self.profile, cause_by=type(summary_action))
+                    self._rc.memory.add(summary_msg)
+                    msg_content += str(summary_result)
+                    msg_content += '\n'
+
+            else:
+                msg = Message(content=str(result), role=self.profile, cause_by=type(todo))
+                self._rc.memory.add(msg)
+
+        except Exception as e:
+            logger.error(f"Error during action execution: {e}")
+            return Message(content=f"Error: {e}", role=self.profile)
+
+        return Message(content=str(msg_content), role=self.profile, cause_by=type(todo))
+
+```
+
+
+
+几个小问题SummaryDailyPaper 总结时随机性丢失link（大概是prompt的问题）
+
+使用一个for循环调用了SummaryDailyPaper， 应该有更优雅的方法
+
+
+
+#### 4\. Trigger
+
+基本没有太大变化
+
+```python
+import time
+from aiocron import crontab
+from typing import Optional
+from pytz import BaseTzInfo
+from pydantic import BaseModel, Field
+from metagpt.schema import Message
+
+class DailyPaperInfo(BaseModel):
+    url: str
+    timestamp: float = Field(default_factory=time.time)
+
+
+
+class HuggingfaceDailyPaperCronTrigger():
+
+    def __init__(self, spec: str, tz: Optional[BaseTzInfo] = None, url: str = "https://huggingface.co/papers") -> None:
+        self.crontab = crontab(spec, tz=tz)
+        self.url = url
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        await self.crontab.next()
+        return Message(self.url, DailyPaperInfo(url=self.url))
+
+```
+
+#### 5\. Callback
+
+```python
+# callback
+import os
+import discord
+async def discord_callback(msg: Message):
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.members = True
+
+    client = discord.Client(intents=intents)
+    token = TOKEN
+    channel_id = int(CHANNEL_ID)
+
+    async with client:
+        await client.login(token)
+        channel = await client.fetch_channel(channel_id)
+        lines = []
+        for i in msg.content.splitlines():
+            if i.startswith(("# ", "## ", "### ")):
+                if lines:
+                    await channel.send("\n".join(lines))
+                    lines = []
+            lines.append(i)
+
+        if lines:
+            await channel.send("\n".join(lines))
+```
+
+
+
+#### 6\. main
+
+```python
+from metagpt.subscription import SubscriptionRunner
+# 运行入口，
+async def main(spec: str = "54 16 * * *", discord: bool = True, wxpusher: bool = False):
+    callbacks = []
+    if discord:
+        callbacks.append(discord_callback)
+
+    if wxpusher:
+        callbacks.append(wxpusher_callback)
+
+    if not callbacks:
+        async def _print(msg: Message):
+            print(msg.content)
+        callbacks.append(_print)
+
+    async def callback(msg):
+        await asyncio.gather(*(call(msg) for call in callbacks))
+
+    runner = SubscriptionRunner()
+    await runner.subscribe(DailyPaperWatcher(), HuggingfaceDailyPaperCronTrigger(spec), callback)
+    await runner.run()
+
+## test
+from pytz import timezone
+from datetime import datetime, timedelta
+
+current_time = datetime.now()
+target_time = current_time + timedelta(minutes=1)
+cron_expression = target_time.strftime('%M %H %d %m %w')
+print(cron_expression)
+
+await main(cron_expression)
+```
+
+
+
+### 修改
+
+改写SummaryDailyPaper
+
+````python
+from typing import Any
+PAPER_SUMMARY_PROMPT = """
+    Transform the given data about a research paper into a neat Markdown format. Also, identify and include five relevant keywords that best represent the core themes of the paper.
+    Don't forget to include the title, abstract, and arXiv URL.
+    The provided data is:
+    ```
+    {data}
+    ```
+    Please create a markdown summary and suggest five keywords related to this paper, as well as the title, abstract, and arXiv URL.
+    """
+class SummaryDailyPaper(Action):
+    def __init__(self, data: Any):
+        super().__init__(data)
+        self.data = data
+
+    async def run(
+        self
+    ):
+        return await self._aask(PAPER_SUMMARY_PROMPT.format(data=self.data))
+````
+
+改写role
+
+```python
+class DailyPaperWatcher(Role):
+    def __init__(
+        self,
+        name="Huggy",
+        profile="DailyPaperWatcher",
+        goal="Generate a summary of Huggingface daily papers.",
+        constraints="Only analyze based on the provided Huggingface daily papers.",
+    ):
+        super().__init__(name, profile, goal, constraints)
+        self._init_actions([CrawlHuggingfaceDailyPaper])
+        self.tot_content = ""
+
+    async def _act(self) -> Message:
+        logger.info(f"{self._setting}: ready to {self._rc.todo}")
+
+        todo = self._rc.todo
+        if type(todo) is CrawlHuggingfaceDailyPaper:
+            msg = self._rc.memory.get(k=1)[0]
+
+            resp = await todo.run()
+            logger.info(resp)
+            return await self._handle_paper(resp)
+        
+        resp = await todo.run()
+        logger.info(resp)
+        
+        if self.tot_content != "":
+            self.tot_content += "\n\n\n"
+        self.tot_content += resp
+        return Message(content=resp, role=self.profile)
+    
+
+    async def _think(self) -> None:
+        """Determine the next action to be taken by the role."""
+        if self._rc.todo is None:
+            self._set_state(0)
+            return
+
+        if self._rc.state + 1 < len(self._states):
+            self._set_state(self._rc.state + 1)
+        else:
+            self._rc.todo = None
+
+    async def _react(self) -> Message:
+        """Execute the assistant's think and actions."""
+        while True:
+            await self._think()
+            if self._rc.todo is None:
+                break
+            msg = await self._act()
+
+        # return msg
+        return Message(content=self.tot_content, role=self.profile)
+
+    async def _handle_paper(self, paper_info) -> None:
+        actions = []
+        # Enhanced logging for debuggingself
+        logger.debug(f"Handling paper with info: {paper_info}")
+        self.tot_content += f"# Huggingface Daily Paper: {datetime.now().strftime('%Y-%m-%d')}"
+
+        for paper in paper_info:
+            # print(paper)
+            actions.append(SummaryDailyPaper(paper))
+            # logger.info(f"Preparing to summarize paper: {paper['title']}")
+
+        self._init_actions(actions)
+        self._rc.todo = None
+        return Message(content="init", role=self.profile)
+
+```
+
+似乎更合理一些
+
+<details>
+    <summary>一些想法</summary>
+    - 在这个场景下， 其实可以将callback也作为一种action，比如在summary一篇文章后就send discord message，而不是汇总后再发送；这样当每天paper数量非常多的时候能够减少等待时间；
+
+   - 对于一个个体而言， 并没有精力关注所有的，不同领域的paper， 可以在SummaryDailyPaper的同时， 增加对感兴趣内容的排序和筛选；这部分内容可以用prompt实现, 或者训练一个排序模型。
+
+      + prompt
+
+         ````python
+         """
+         ## Optimized Prompt
+         
+         ### Instructions:
+         1. You will receive a list of topics I am interested in, which is in priority order.
+         2. Your task is to sort a given list of daily paper titles based on the relevance to my interests.
+         3. Use the separators "Interest list:" and "Paper titles:" to clearly distinguish between the two lists.
+         4. Provide the sorted output in a structured format, starting with the title most relevant to my top interest.
+         5. Before delivering the output, confirm if all conditions are met. If there is a mismatch or ambiguity in interpreting the relevance, ask for clarification.
+         6. Include at least two examples of how a sorted output should look based on a hypothetical interest list and paper titles.
+         
+         
+         ---
+         
+         ### Example Interest List and Corresponding Sorted Titles:
+         
+         #### Example 1:
+         - Interest List: Quantum Computing, Artificial Intelligence, Space Exploration
+         - Paper Titles: A) The Next Frontier in AI, B) Quantum Breakthroughs of the Year, C) Mars: Our Future Home?
+         - Expected Sorted Output:
+           1. Quantum Breakthroughs of the Year
+           2. The Next Frontier in AI
+           3. Mars: Our Future Home?
+         
+         #### Example 2:
+         - Interest List: Environmental Policy, Renewable Energy, Urban Development
+         - Paper Titles: X) Solar Power in Modern Cities, Y) Legislating Climate Change, Z) Smart Cities: The Future of Urban Living
+         - Expected Sorted Output:
+           1. Legislating Climate Change
+           2. Solar Power in Modern Cities
+           3. Smart Cities: The Future of Urban Living
+         
+         ---
+         ```
+         ## Interest List:
+         {Your prioritized topics should be listed here, clearly separated by commas.}
+         
+         ## Paper Titles:
+         {The daily paper titles to be sorted should be listed here, clearly separated by commas or newlines.}
+         ```
+         ---
+         Here is the re-ordered paper titles:
+         
+         """
+         ````
+
+   - 其实HF的daily paper有邮件订阅功能， trigger也可以是收到AK所发送的email。
+</details>
 
