@@ -1513,7 +1513,1188 @@ class DailyPaperWatcher(Role):
          
          """
          ````
+          more： Search reranking with cross-encoders
 
    - 其实HF的daily paper有邮件订阅功能， trigger也可以是收到AK所发送的email。
 </details>
 
+
+# <a id="chapter5"></a>Chapter 5: Action Nodes
+
+> `ActionNode`可以被视为一组动作树，根据类内定义，一个动作树的父节点可以访问所有的子动作节点；也就是说，定义了一个完整的动作树之后，可以从父节点按树的结构顺序执行每一个子动作节点。因此，动作的执行也可以突破0.4版本框架中，需要在Role的`_react`内循环执行的限制，达到更好的CoT效果。
+
+
+
+> 同时，在`ActionNode`基类中，也配置了更多格式检查和格式规范工具，让CoT执行过程中，内容的传递更加结构化。这也服务于让MetaGPT框架生成更好、更长、更少Bug的代码这一目的。
+
+
+
+
+
+## 什么是ActionNode
+
+[为什么要采用ActionNode的数据结构](https://deepwisdom.feishu.cn/wiki/JUF0wc5rti9qRrkyiI2cyNCDnUd)
+
+> ActionNode是对Action的通用化抽象，是SOP的最小单元
+
+- **ActionNode作为基础组件**
+
+- **模拟语言结构的能力**
+
+- **支持SOP的自动生成**
+
+
+
+## ActionNode 源码
+
+v0.6.0 version
+
+[https://github.com/geekan/MetaGPT/blob/v0.6.0/metagpt/actions/action_node.py](https://github.com/geekan/MetaGPT/blob/v0.5.2/metagpt/actions/action_node.py)
+
+参数结构
+
+```python
+schema: str  # raw/json/markdown, default: ""
+
+# Action Context
+context: str  # all the context, including all necessary info
+llm: BaseLLM  # LLM with aask interface
+children: dict[str, "ActionNode"]
+
+# Action Input
+key: str  # Product Requirement / File list / Code
+expected_type: Type  # such as str / int / float etc.
+# context: str  # everything in the history.
+instruction: str  # the instructions should be followed.
+example: Any  # example for In Context-Learning.
+
+# Action Output
+content: str
+instruct_content: BaseModel
+```
+
+主要方法：
+
+### Fill
+
+**`simple_fill`**
+
+```python
+# 获取自身的context信息（保存着所有与动作执行有关的上下文）作为prompt
+# 执行prompt，并获取返回，保存到自身的content中
+async def simple_fill(self, schema, mode, timeout=CONFIG.timeout, exclude=None):
+        prompt = self.compile(context=self.context, schema=schema, mode=mode, exclude=exclude)
+
+        if schema != "raw":
+            mapping = self.get_mapping(mode, exclude=exclude)
+            class_name = f"{self.key}_AN"
+            # 这里获取的content是llm返回的源文本，scontent则是结构化处理的文本；
+            # _aask_v1 函数会检查llm返回的内容的结构，如果不符合用户期望的格式，则会调用llm重新生成内容
+            content, scontent = await self._aask_v1(prompt, class_name, mapping, schema=schema, timeout=timeout)
+            self.content = content
+            self.instruct_content = scontent
+        else:
+            self.content = await self.llm.aask(prompt)
+            self.instruct_content = None
+
+        return self
+```
+
+主要用于简单的情况，即需要填充当前 **`ActionNode`** 及其子节点时。
+
+首先通过 **`compile`** 方法创建一个提示（prompt），该提示包含了所有必要的上下文、指令和示例。
+
+然后，它使用 **`get_mapping`** 方法来获取当前节点和/或子节点的映射（即每个节点的键和预期类型）。
+
+接着，该方法通过 **`_aask_v1`** 方法异步地向语言模型发送提示，并等待模型的回复。
+
+当接收到回复后，它将解析并存储结果到 **`content`** 和 **`instruct_content`** 属性中。
+<details>
+    <summary>`complie`</summary>
+
+
+   将各种条件，上下文信息合成一个prompt
+
+   ```python
+   CONSTRAINT = """
+   - Language: Please use the same language as the user input.
+   - Format: output wrapped inside [CONTENT][/CONTENT] as format example, nothing else.
+   """
+   
+   SIMPLE_TEMPLATE = """
+   ## context
+   {context}
+   
+   -----
+   
+   ## format example
+   {example}
+   
+   ## nodes: "<node>: <type>  # <comment>"
+   {instruction}
+   
+   ## constraint
+   {constraint}
+   
+   ## action
+   Fill in the above nodes based on the format example.
+   """
+   def compile(self, context, schema="json", mode="children", template=SIMPLE_TEMPLATE, exclude=[]) -> str:
+           """
+           mode: all/root/children
+               mode="children": 编译所有子节点为一个统一模板，包括instruction与example
+               mode="all": NotImplemented
+               mode="root": NotImplemented
+           schmea: raw/json/markdown
+               schema="raw": 不编译，context, lang_constaint, instruction
+               schema="json"：编译context, example(json), instruction(markdown), constraint, action
+               schema="markdown": 编译context, example(markdown), instruction(markdown), constraint, action
+           """
+           if schema == "raw":
+               return context + "\n\n## Actions\n" + LANGUAGE_CONSTRAINT + "\n" + self.instruction
+   
+           # FIXME: json instruction会带来格式问题，如："Project name": "web_2048  # 项目名称使用下划线",
+           # compile example暂时不支持markdown
+           instruction = self.compile_instruction(schema="markdown", mode=mode, exclude=exclude)
+           example = self.compile_example(schema=schema, tag=TAG, mode=mode, exclude=exclude)
+           # nodes = ", ".join(self.to_dict(mode=mode).keys())
+           constraints = [LANGUAGE_CONSTRAINT, FORMAT_CONSTRAINT]
+           constraint = "\n".join(constraints)
+   
+           prompt = template.format(
+               context=context,
+               example=example,
+               instruction=instruction,
+               constraint=constraint,
+           )
+           return prompt
+   
+   
+   
+   ```
+</details>
+   
+
+   
+
+   
+<details>
+    <summary>`get_mapping`</summary>
+
+
+   ```python
+   def get_children_mapping(self, exclude=None) -> Dict[str, Tuple[Type, Any]]:
+           """获得子ActionNode的字典，以key索引"""
+           exclude = exclude or []
+           return {k: (v.expected_type, ...) for k, v in self.children.items() if k not in exclude}
+   
+       def get_self_mapping(self) -> Dict[str, Tuple[Type, Any]]:
+           """get self key: type mapping"""
+           return {self.key: (self.expected_type, ...)}
+   
+       def get_mapping(self, mode="children", exclude=None) -> Dict[str, Tuple[Type, Any]]:
+           """get key: type mapping under mode"""
+           if mode == "children" or (mode == "auto" and self.children):
+               return self.get_children_mapping(exclude=exclude)
+           return {} if exclude and self.key in exclude else self.get_self_mapping()
+   
+   ```
+</details>
+
+<details>
+    <summary>**`_aask_v1`**</summary>
+
+
+   解析的目的是将原始返回内容转换成结构化的数据
+
+   ```python
+   @retry(
+           wait=wait_random_exponential(min=1, max=20),
+           stop=stop_after_attempt(6),
+           after=general_after_log(logger),
+       )
+       async def _aask_v1(
+           self,
+           prompt: str,
+           output_class_name: str,
+           output_data_mapping: dict,
+           system_msgs: Optional[list[str]] = None,
+           schema="markdown",  # compatible to original format
+           timeout=CONFIG.timeout,
+       ) -> (str, BaseModel):
+           """Use ActionOutput to wrap the output of aask"""
+           content = await self.llm.aask(prompt, system_msgs, timeout=timeout)
+           logger.debug(f"llm raw output:\n{content}")
+           output_class = self.create_model_class(output_class_name, output_data_mapping)
+   
+           if schema == "json":
+               parsed_data = llm_output_postprocess(
+                   output=content, schema=output_class.model_json_schema(), req_key=f"[/{TAG}]"
+               )
+           else:  # using markdown parser
+               parsed_data = OutputParser.parse_data_with_mapping(content, output_data_mapping)
+   
+           logger.debug(f"parsed_data:\n{parsed_data}")
+           instruct_content = output_class(**parsed_data)
+           return content, instruct_content
+   ```
+
+   **`_aask_v1`** 方法能够动态创建一个新的 Pydantic 模型类（**`output_class`**），这个类具有 **`output_data_mapping`** 指定的结构。然后，该方法使用这个动态生成的类来实例化对象（**`instruct_content`**），该对象包含了解析后的数据，并且确保这些数据符合定义好的数据结构和类型约束。
+
+   **这种方法的优势在于它提供了很大的灵活性和强类型检查的能力，使得代码能够适应不同的数据需求和格式，同时保证数据的正确性和一致性。**
+</details>
+
+`fill`
+
+```python
+async def fill(self, context, llm, schema="json", mode="auto", strgy="simple", timeout=CONFIG.timeout, exclude=[]):
+        """Fill the node(s) with mode.
+
+        :param context: Everything we should know when filling node.
+        :param llm: Large Language Model with pre-defined system message.
+        :param schema: json/markdown, determine example and output format.
+         - raw: free form text
+         - json: it's easy to open source LLM with json format
+         - markdown: when generating code, markdown is always better
+        :param mode: auto/children/root
+         - auto: automated fill children's nodes and gather outputs, if no children, fill itself
+         - children: fill children's nodes and gather outputs
+         - root: fill root's node and gather output
+        :param strgy: simple/complex
+         - simple: run only once
+         - complex: run each node
+        :param timeout: Timeout for llm invocation.
+        :param exclude: The keys of ActionNode to exclude.
+        :return: self
+        """
+        self.set_llm(llm)
+        self.set_context(context)
+        if self.schema:
+            schema = self.schema
+
+        if strgy == "simple":
+            return await self.simple_fill(schema=schema, mode=mode, timeout=timeout, exclude=exclude)
+        elif strgy == "complex":
+            # 这里隐式假设了拥有children
+            tmp = {}
+            for _, i in self.children.items():
+                if exclude and i.key in exclude:
+                    continue
+                child = await i.simple_fill(schema=schema, mode=mode, timeout=timeout, exclude=exclude)
+                tmp.update(child.instruct_content.dict())
+            cls = self.create_children_class()
+            self.instruct_content = cls(**tmp)
+            return self
+```
+
+**方法参数**：
+
+- **`context`**: 提供给节点的所有相关信息，用于在填充数据时作为参考。
+
+- **`llm`**: 一个预设有系统消息的大型语言模型，用于生成或获取数据。
+
+- **`schema`**: 指定输出格式，可以是 "json"、"markdown" 或 "raw"。
+
+- **`mode`**: 指定填充模式，包括 "auto"、"children" 或 "root"。
+
+- **`strgy`**: 指定策略，可以是 "simple" 或 "complex"。
+
+- **`timeout`**: 定义与LLM交互时的超时时间。
+
+- **`exclude`**: 排除某些节点的键。
+
+**选择填充策略**
+
+- 如果 **`strgy`** 为 "simple"，那么方法会调用 **`simple_fill`** 来进行一次性的简单填充。
+
+- 如果 **`strgy`** 为 "complex"，那么方法会对每个子节点单独执行填充流程
+
+**填充子节点**：
+
+- 在 "complex" 策略中，方法会遍历所有子节点，并对每个子节点调用 **`simple_fill`** 方法。
+
+- 如果 **`exclude`** 参数包含了某个节点的键，那么这个节点将被跳过，不进行填充。
+
+- 对每个子节点的填充结果（**`instruct_content`**）被聚合到一个临时字典（**`tmp`**）中。
+
+**聚合和返回结果**：
+
+- 聚合完成后，使用 **`create_children_class`** 方法基于聚合的数据创建一个新的类。
+
+- 然后，使用这个新创建的类和聚合的数据实例化 **`instruct_content`**。
+
+- 最后，方法返回当前的 **`ActionNode`** 实例。
+
+
+
+### 还在路上的方法
+
+1. review: 评价填槽完成度与问题
+
+2. revise: 基于review的建议和结果进行优化
+
+3. plan: 生成新的child槽，可以只有instruction
+
+
+
+**cache： 引入工作记忆**
+
+RAG(with_docs)
+
+
+
+## ActionNode 用例
+
+### 快速掌握ActionNode的用法：打印斐波那契数列
+
+注意，v0.6.0 版本config有一些小变化，如azure openai API的配置变成：
+
+```python
+#OPENAI_API_TYPE: "azure"
+#OPENAI_BASE_URL: "YOUR_AZURE_ENDPOINT"
+#OPENAI_API_KEY: "YOUR_AZURE_API_KEY"
+#OPENAI_API_VERSION: "YOUR_AZURE_API_VERSION"
+#DEPLOYMENT_NAME: "YOUR_DEPLOYMENT_NAME"
+```
+
+
+
+
+
+
+设定ActionNode
+
+```python
+# 将思考斐波那契数列的10个数字作为prompt输入，在这里我们将“思考需要生成的数字列表”作为命令（instruction）写入
+ # 将期望返回格式（expected_type）设置为str，无需设置例子（example）
+SIMPLE_THINK_NODE = ActionNode(
+    key="Simple Think Node",
+    expected_type=str,
+    instruction="""
+            Think about what list of numbers you need to generate
+            """,
+    example=""
+)
+
+# 在这里通过命令（instruction）来规定需要生成的数字列表格式，提供例子（example）来帮助LLM理解
+SIMPLE_CHECK_NODE = ActionNode(
+    key="Simple CHECK Node",
+    expected_type=str,
+    instruction="""
+            Please provide the number list for me, strictly following the following requirements:
+            1. Answer strictly in the list format like [1,2,3,4]
+            2. Do not have extra spaces or line breaks.
+            Return the list here:
+            """,
+    example="[1,2,3,4]"
+            "[4,5,6]",
+ )
+
+
+```
+
+定义ActionNode 子类
+
+```python
+class THINK_NODES(ActionNode):
+    def __init__(self, name="Think Nodes", expected_type=str, instruction="", example=""):
+        super().__init__(key=name, expected_type=str, instruction=instruction, example=example)
+        self.add_children([SIMPLE_THINK_NODE, SIMPLE_CHECK_NODE])    # 初始化过程，将上面实现的两个子节点加入作为THINK_NODES类的子节点
+
+    async def fill(self, context, llm, schema="raw", mode="auto", strgy="complex"):
+        self.set_llm(llm)
+        self.set_context(context)
+        if self.schema:
+            schema = self.schema
+
+        if strgy == "simple":
+            return await self.simple_fill(schema=schema, mode=mode)
+        elif strgy == "complex":
+            # 这里隐式假设了拥有children
+            child_context = context    # 输入context作为第一个子节点的context
+            for _, i in self.children.items():
+                i.set_context(child_context)    # 为子节点设置context
+                child = await i.simple_fill(schema=schema, mode=mode)
+                child_context = child.content    # 将返回内容（child.content）作为下一个子节点的context
+
+            self.content = child_context    # 最后一个子节点返回的内容设置为父节点返回内容（self.content）
+            return self
+
+
+```
+
+在教程中的代码需要修改：
+
+```python
+super().__init__() -> 
+super().__init__(key=name, expected_type=str, instruction=instruction, example=example)
+
+```
+
+
+
+SimplePrint 动作:
+
+```python
+class SimplePrint(Action):
+    """
+    Action that print the num inputted
+    """
+    input_num: int = 0
+
+    def __init__(self, name="SimplePrint", input_num:int=0):
+        super().__init__()
+
+        self.input_num = input_num
+
+    async def run(self, **kwargs):
+        print(str(self.input_num) + "\n")
+        return 0
+
+class ThinkAction(Action):
+    """
+    Action that think
+    """
+
+    def __init__(self, name="ThinkAction", context=None, llm=None):
+        super().__init__()
+        self.node = THINK_NODES()    # 初始化Action时，初始化一个THINK_NODE实例并赋值给self.node
+
+    async def run(self, instruction) -> list:
+        PROMPT = """
+            You are now a number list generator, follow the instruction {instruction} and
+            generate a number list to be printed please.
+            """
+
+        prompt = PROMPT.format(instruction=instruction)
+        rsp_node = await self.node.fill(context=prompt, llm=self.llm, schema="raw",
+                                        strgy="complex")  # 运行子节点，获取返回（返回格式为ActionNode）（注意设置 schema="raw" ）
+        rsp = rsp_node.content  # 获取返回的文本内容
+
+        rsp_match = self.find_in_brackets(rsp)  # 按列表格式解析返回的文本内容，定位“[”与“]”之间的内容
+
+        try:
+            rsp_list = list(map(int, rsp_match[0].split(',')))  # 按列表格式解析返回的文本内容，按“,”对内容进行分割，并形成一个python语法中的列表
+
+            return rsp_list
+        except:
+            return []
+
+    @staticmethod
+    def find_in_brackets(s):
+        pattern = r'\[(.*?)\]'
+        match = re.findall(pattern, s)
+        return match
+```
+
+
+
+定义Printer 角色
+
+```python
+class Printer(Role):
+
+    def __init__(self, name="Jerry", profile="Printer", goal="Print the number", constraints=""):
+        super().__init__()
+
+        self._init_actions([ThinkAction])
+        # self.num_list = list()
+
+    async def _think(self) -> None:
+        """Determine the action"""
+        # logger.info(self._rc.state)
+
+        if self.rc.todo is None:
+            self._set_state(0)
+            return
+
+        if self.rc.state + 1 < len(self.states):
+            self._set_state(self.rc.state + 1)
+        else:
+            self.rc.todo = None
+
+    async def _prepare_print(self, num_list:list) -> Message:
+        """Add actions"""
+        actions = list()
+
+        for num in num_list:
+            actions.append(SimplePrint(input_num=num))
+
+        self._init_actions(actions)
+        self.rc.todo = None
+        return Message(content=str(num_list))
+
+    async def _act(self) -> Message:
+        """Action"""
+        todo = self.rc.todo
+
+        if type(todo) is ThinkAction :
+            msg = self.rc.memory.get(k=1)[0]
+            self.goal = msg.content
+            resp = await todo.run(instruction=self.goal)
+            # logger.info(resp)
+
+            return await self._prepare_print(resp)
+
+        resp = await todo.run()
+        # logger.info(resp)
+
+        return Message(content=str(resp), role=self.profile)
+
+    async def _react(self) -> Message:
+        """"""
+        while True:
+            await self._think()
+
+            if self.rc.todo is None:
+                break
+            msg = await self._act()
+
+        return msg
+      
+```
+
+
+
+执行：
+
+```python
+async def main():
+    msg = "Provide the first 10 numbers of the Fibonacci series"
+    role = Printer()
+    logger.info(msg)
+    result = await role.run(msg)
+    logger.info(result)
+
+
+# if __name__ == '__main__':
+    # asyncio.run(main())
+await main()
+```
+
+结果如下：
+
+```shell
+
+2024-01-21 05:54:29.161 | INFO     | __main__:main:4 - Provide the first 10 numbers of the Fibonacci series
+To generate the first 10 numbers of the Fibonacci series, we can start with 0 and 1, and then each subsequent number is the sum of the previous two numbers. Here is the number list:
+
+0, 1, 1, 2, 3, 5, 8, 13, 21, 34
+[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]
+2024-01-21 05:54:31.656 | INFO     | __main__:main:6 - : 0
+0
+
+1
+
+1
+
+2
+
+3
+
+5
+
+8
+
+13
+
+21
+
+34
+```
+
+
+
+### 使用ActionNode实现一个Agent：技术文档助手
+
+将使用ActionNode重构Chapter3中实现的`TutorialAssistant`
+
+### ActionNode：重写WriteDirectory方法
+
+```python
+# 命令文本
+DIRECTORY_STRUCTION = """
+    You are now a seasoned technical professional in the field of the internet.
+    We need you to write a technical tutorial".
+    您现在是互联网领域的经验丰富的技术专业人员。
+    我们需要您撰写一个技术教程。
+    """
+
+# 实例化一个ActionNode，输入对应的参数
+DIRECTORY_WRITE = ActionNode(
+    # ActionNode的名称
+    key="DirectoryWrite",
+    # 期望输出的格式
+    expected_type=str,
+    # 命令文本
+    instruction=DIRECTORY_STRUCTION,
+    # 例子输入，在这里我们可以留空
+    example="",
+ )
+```
+
+将ActionNode引入之前的Action—WriteDirectory中， 使用ActionNode.fill()  方法
+
+```python
+
+
+class WriteDirectory(Action):
+    """Action class for writing tutorial directories.
+
+    Args:
+        name: The name of the action.
+        language: The language to output, default is "Chinese".
+
+        用于编写教程目录的动作类。
+        参数：
+        name：动作的名称。
+        language：输出的语言，默认为"Chinese"。
+    """
+
+    language: str = "Chinese"
+
+    def __init__(self, name: str = "", language: str = "Chinese", *args, **kwargs):
+        super().__init__()
+        self.language = language
+
+    async def run(self, topic: str, *args, **kwargs) -> Dict:
+        """Execute the action to generate a tutorial directory according to the topic.
+
+        Args:
+            topic: The tutorial topic.
+
+        Returns:
+            the tutorial directory information, including {"title": "xxx", "directory": [{"dir 1": ["sub dir 1", "sub dir 2"]}]}.
+        根据主题执行生成教程目录的操作。
+            参数：
+            topic：教程主题。
+            返回：
+            教程目录信息，包括{"title": "xxx", "directory": [{"dir 1": ["sub dir 1", "sub dir 2"]}]}.
+        """
+
+        DIRECTORY_PROMPT = """
+        The topic of tutorial is {topic}. Please provide the specific table of contents for this tutorial, strictly following the following requirements:
+        1. The output must be strictly in the specified language, {language}.
+        2. Answer strictly in the dictionary format like {{"title": "xxx", "directory": [{{"dir 1": ["sub dir 1", "sub dir 2"]}}, {{"dir 2": ["sub dir 3", "sub dir 4"]}}]}}.
+        3. The directory should be as specific and sufficient as possible, with a primary and secondary directory.The secondary directory is in the array.
+        4. Do not have extra spaces or line breaks.
+        5. Each directory title has practical significance.
+        教程的主题是{topic}。请按照以下要求提供本教程的具体目录：
+        1. 输出必须严格符合指定语言，{language}。
+        2. 回答必须严格按照字典格式，如{{"title": "xxx", "directory": [{{"dir 1": ["sub dir 1", "sub dir 2"]}}, {{"dir 2": ["sub dir 3", "sub dir 4"]}}]}}。
+        3. 目录应尽可能具体和充分，包括一级和二级目录。二级目录在数组中。
+        4. 不要有额外的空格或换行符。
+        5. 每个目录标题都具有实际意义。
+        """
+
+        # 我们设置好prompt，作为ActionNode的输入
+        prompt = DIRECTORY_PROMPT.format(topic=topic, language=self.language)
+        # resp = await self._aask(prompt=prompt)
+        # 直接调用ActionNode.fill方法，注意输入llm
+        # 该方法会返回self，也就是一个ActionNode对象
+        print("prompt: ", prompt)
+        resp_node = await DIRECTORY_WRITE.fill(context=prompt, llm=self.llm, schema="raw")
+        # 选取ActionNode.content，获得我们期望的返回信息
+        resp = resp_node.content
+        return OutputParser.extract_struct(resp, dict)
+```
+
+
+
+
+
+#### 重写WriteContent
+
+```python
+class WriteContent(Action):
+    """Action class for writing tutorial content.
+
+    Args:
+        name: The name of the action.
+        directory: The content to write.
+        language: The language to output, default is "Chinese".
+    """
+
+    language: str = "Chinese"
+    directory: str = ""
+    total_content: str = "" ## 组装所有子节点的输出
+    
+    def __init__(self, name: str = "", action_nodes: list = [], language: str = "Chinese", *args, **kwargs):
+        super().__init__()
+        self.language = language
+        self.node = ActionNode.from_children("WRITE_CONTENT_NODES", action_nodes) ## 根据传入的action_nodes列表，生成一个父节点
+
+    async def run(self, topic: str, *args, **kwargs) -> str:
+        COMMON_PROMPT = """
+        You are now a seasoned technical professional in the field of the internet. 
+        We need you to write a technical tutorial with the topic "{topic}".
+        """
+        CONTENT_PROMPT = COMMON_PROMPT + """
+        Now I will give you the module directory titles for the topic. 
+        Please output the detailed principle content of this title in detail. 
+        If there are code examples, please provide them according to standard code specifications. 
+        Without a code example, it is not necessary.
+
+        The module directory titles for the topic is as follows:
+        {directory}
+
+        Strictly limit output according to the following requirements:
+        1. Follow the Markdown syntax format for layout.
+        2. If there are code examples, they must follow standard syntax specifications, have document annotations, and be displayed in code blocks.
+        3. The output must be strictly in the specified language, {language}.
+        4. Do not have redundant output, including concluding remarks.
+        5. Strict requirement not to output the topic "{topic}".
+        """
+        
+        for _, i in self.node.children.items():
+            prompt = CONTENT_PROMPT.format(
+                topic=topic, language=self.language, directory=i.key)
+            i.set_llm(self.llm) 
+            
+            i.set_context(prompt)
+            child = await i.simple_fill(schema="raw", mode="auto") 
+            self.total_content += child.content 
+        logger.info("writecontent:", self.total_content)
+        return self.total_content
+```
+
+
+
+
+
+#### 组合role：TutorialAssistant
+
+```python
+class TutorialAssistant(Role):
+    
+    topic: str = ""
+    main_title: str = ""
+    total_content: str = ""
+    language: str = "Chinese"
+
+    def __init__(
+        self,
+        name: str = "Stitch",
+        profile: str = "Tutorial Assistant",
+        goal: str = "Generate tutorial documents",
+        constraints: str = "Strictly follow Markdown's syntax, with neat and standardized layout",
+        language: str = "Chinese",
+    ):
+        super().__init__()
+        self._init_actions([WriteDirectory(language=language)])
+        self.language = language
+
+    async def _think(self) -> None:
+        """Determine the next action to be taken by the role."""
+        logger.info(self.rc.state)
+        # logger.info(self,)
+        if self.rc.todo is None:
+            self._set_state(0)
+            return
+
+        if self.rc.state + 1 < len(self.states):
+            self._set_state(self.rc.state + 1)
+        else:
+            self.rc.todo = None
+
+    async def _handle_directory(self, titles: Dict) -> Message:
+        self.main_title = titles.get("title")
+        directory = f"{self.main_title}\n"
+        self.total_content += f"# {self.main_title}"
+        action_nodes = list()
+        # actions = list()
+        for first_dir in titles.get("directory"):
+            action_nodes.append(ActionNode(
+                key=f"{first_dir}",
+                expected_type=str,
+                instruction="",
+                example=""))
+            key = list(first_dir.keys())[0]
+            directory += f"- {key}\n"
+            for second_dir in first_dir[key]:
+                directory += f"  - {second_dir}\n"
+        
+        self._init_actions([WriteContent(language=self.language, action_nodes=action_nodes)])
+        self.rc.todo = None
+        return Message(content=directory)
+
+    async def _act(self) -> Message:
+        """Perform an action as determined by the role.
+
+        Returns:
+            A message containing the result of the action.
+        """
+        todo = self.rc.todo
+        if type(todo) is WriteDirectory:
+            msg = self.rc.memory.get(k=1)[0]
+            self.topic = msg.content
+            resp = await todo.run(topic=self.topic)
+            logger.info(resp)
+            return await self._handle_directory(resp)
+        resp = await todo.run(topic=self.topic)
+        logger.info(resp)
+        if self.total_content != "":
+            self.total_content += "\n\n\n"
+        self.total_content += resp
+        return Message(content=resp, role=self.profile)
+
+    async def _react(self) -> Message:
+        """Execute the assistant's think and actions.
+
+        Returns:
+            A message containing the final result of the assistant's actions.
+        """
+        while True:
+            await self._think()
+            if self.rc.todo is None:
+                break
+            msg = await self._act()
+        root_path = TUTORIAL_PATH / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        logger.info(f"Write tutorial to {root_path}")
+        await File.write(root_path, f"{self.main_title}.md", self.total_content.encode('utf-8'))
+        return msg
+```
+
+
+
+#### 使用
+
+```python
+async def main():
+    msg = "强化学习"
+    role = TutorialAssistant()
+    logger.info(msg)
+    result = await role.run(msg)
+    logger.info(result)
+
+await main()
+```
+
+效果：
+
+```markdown
+### 第一章: 强化学习概述
+
+强化学习是一种机器学习方法，通过智能体与环境的交互来学习最优的行为策略。在强化学习中，智能体通过观察环境的状态，采取相应的动作，并根据环境的反馈获得奖励或惩罚。智能体的目标是通过与环境的交互，最大化累积奖励。
+
+#### 强化学习的基本要素
+
+强化学习包含以下基本要素：
+...
+```
+
+
+
+
+<details>
+    <summary>**遇到的一些问题**</summary>
+
+   **validation error for DirectoryWrite_AN**
+
+   ```shell
+   | metagpt.utils.common:log_it:434 - Finished call to 'metagpt.actions.action_node.ActionNode._aask_v1' after 59.559(s), this was the 6th time calling it. exp: 1 validation error for DirectoryWrite_AN
+   DirectoryWrite
+     Input should be a valid string [type=string_type, input_value={'title': 'AI教程', 'di... 'AI的伦理问题']}]}, input_type=dict]
+       For further information visit https://errors.pydantic.dev/2.5/v/string_type
+   ```
+
+   原因：\_aask_v1() 中schema默认是markdown， 但这个场景下输入了dict导致报错
+
+   解决：`resp_node = await DIRECTORY_WRITE.fill(context=prompt, llm=self.llm, schema="raw")`
+
+   设定schema
+
+   0\.5到0.6版本升级需要修改和注意：
+
+   ![1633aae3e308ebcbc06382afcad8d52b.PNG](./image/1633aae3e308ebcbc06382afcad8d52b.PNG)
+
+   （感谢开发群的小伙伴）
+
+</details>  
+
+   
+
+   
+
+   
+
+## Task5 Homework： 使用ActionNode 实现NovelWriter
+
+基本复制TutorialAssistant 即可， 但可以修改几个地方
+
+- prompt： 之前的prompt更适合写技术文档，为非写小说
+
+- ~~temperature of llm: 更高的temperature 可以有更意想不到的结果~~ however, follow instruction 能力变差，所以建议不要改
+
+### WriteDirectory 修改
+
+````python
+DIRECTORY_STRUCTION = """
+    We need you to weave a captivating science fiction story".
+    您现在是一个在技术重塑社会的世界里的富有远见的科幻小说作者。
+    我们需要您编织一个引人入胜的科幻故事。```
+
+    """
+
+# 实例化一个ActionNode，输入对应的参数
+DIRECTORY_WRITE = ActionNode(
+    # ActionNode的名称
+    key="DirectoryWrite",
+    # 期望输出的格式
+    expected_type=str,
+    # 命令文本
+    instruction=DIRECTORY_STRUCTION,
+    # 例子输入，在这里我们可以留空
+    example="",
+ )
+````
+
+```python
+
+
+class WriteDirectory(Action):
+    """Action class for writing tutorial directories.
+
+    Args:
+        name: The name of the action.
+        language: The language to output, default is "Chinese".
+
+        用于编写教程目录的动作类。
+        参数：
+        name：动作的名称。
+        language：输出的语言，默认为"Chinese"。
+    """
+
+    language: str = "Chinese"
+
+    def __init__(self, name: str = "", language: str = "Chinese", *args, **kwargs):
+        super().__init__()
+        self.language = language
+
+    async def run(self, topic: str, *args, **kwargs) -> Dict:
+        """Execute the action to generate a tutorial directory according to the topic.
+
+        Args:
+            topic: The tutorial topic.
+
+        Returns:
+            the tutorial directory information, including {"title": "xxx", "directory": [{"dir 1": ["sub dir 1", "sub dir 2"]}]}.
+        根据主题执行生成教程目录的操作。
+            参数：
+            topic：教程主题。
+            返回：
+            教程目录信息，包括{"title": "xxx", "directory": [{"dir 1": ["sub dir 1", "sub dir 2"]}]}.
+        """
+
+        DIRECTORY_PROMPT = """
+        The theme of your science fiction story is {theme}. Please provide the detailed outline for this story, adhering strictly to the following guidelines:
+        1. The outline must be strictly in the specified language, {language}.
+        2. Respond strictly in the structured format like {{"chapter": "xxx", "sections": [{{"section 1": ["plot point 1", "plot point 2"]}}, {{"section 2": ["plot point 3", "plot point 4"]}}]}}.
+        3. The outline should be as detailed and comprehensive as possible, with primary chapters and secondary sections. Secondary sections are in the array.
+        4. Do not include extra spaces or line breaks.
+        5. Each chapter and section title must be meaningful and relevant to the story.
+        您的科幻小说主题是{theme}。请按照以下指南提供这个故事的详细大纲：
+        1. 大纲必须严格使用指定语言，{language}。
+        2. 回答必须严格按照结构化格式，如{{"chapter": "xxx", "sections": [{{"section 1": ["plot point 1", "plot point 2"]}}, {{"section 2": ["plot point 3", "plot point 4"]}}]}}。
+        3. 大纲应尽可能详细和全面，包括主要章节和次要部分。次要部分在数组中。
+        4. 不要包含额外的空格或换行符。
+        5. 每个章节和部分标题必须对故事有意义且相关。
+        """
+
+        # 我们设置好prompt，作为ActionNode的输入
+        prompt = DIRECTORY_PROMPT.format(topic=topic, language=self.language)
+        # resp = await self._aask(prompt=prompt)
+        # 直接调用ActionNode.fill方法，注意输入llm
+        # 该方法会返回self，也就是一个ActionNode对象
+        print("prompt: ", prompt)
+        resp_node = await DIRECTORY_WRITE.fill(context=prompt, llm=self.llm, schema="raw")
+        # 选取ActionNode.content，获得我们期望的返回信息
+        resp = resp_node.content
+        return OutputParser.extract_struct(resp, dict)
+```
+
+### WriteContent 修改
+
+```python
+class WriteContent(Action):
+    """Action class for writing tutorial content.
+
+    Args:
+        name: The name of the action.
+        directory: The content to write.
+        language: The language to output, default is "Chinese".
+    """
+
+    language: str = "Chinese"
+    directory: str = ""
+    total_content: str = "" ## 组装所有子节点的输出
+    
+    def __init__(self, name: str = "", action_nodes: list = [], language: str = "Chinese", *args, **kwargs):
+        super().__init__()
+        self.language = language
+        self.node = ActionNode.from_children("WRITE_CONTENT_NODES", action_nodes) ## 根据传入的action_nodes列表，生成一个父节点
+
+    async def run(self, topic: str, *args, **kwargs) -> str:
+        """
+                You are now an imaginative science fiction writer in a world of advanced technology and unknown mysteries. 
+        We need you to write a science fiction story with the theme "{theme}".
+        """
+        STORY_CONTENT_PROMPT = SCI_FI_WRITER_PROMPT + """
+        Now I will give you the chapter titles for the theme. 
+        Please output the detailed narrative and plot elements for each title. 
+        If there are dialogues or descriptions of technology, please provide them according to the narrative style of science fiction.
+        Without dialogue or technology description, focus on the story development.
+
+        The chapter titles for the theme are as follows:
+        {chapters}
+
+        Strictly limit output according to the following requirements:
+        1. Follow a structured narrative format suitable for a novel.
+        2. If there are dialogues or technology descriptions, they must be vivid, engaging, and fit within the story's world.
+        3. The output must be strictly in the specified language, {language}.
+        4. Do not have redundant output, including unnecessary descriptions or side plots.
+        5. Strict requirement not to deviate from the theme "{theme}".
+        """
+
+        
+        for _, i in self.node.children.items():
+            prompt = CONTENT_PROMPT.format(
+                topic=topic, language=self.language, directory=i.key)
+            self.llm.temperature = 0.7
+            i.set_llm(self.llm) 
+            ## 为子节点设置context，也就是Prompt，ActionNode中我们将instruction放空，instruction和context都会作为prompt给大模型
+            ## 所以两者有一个为空也没关系，只要prompt完整就行
+            i.set_context(prompt)
+            child = await i.simple_fill(schema="raw", mode="auto") ## 这里的schema注意写"raw"
+            self.total_content += child.content ## 组装所有子节点的输出
+        logger.info("writecontent:", self.total_content)
+        return self.total_content
+
+```
+
+
+
+
+
+### Role: NovelWriter
+
+```python
+class TutorialAssistant(Role):
+    
+    topic: str = ""
+    main_title: str = ""
+    total_content: str = ""
+    language: str = "Chinese"
+
+    def __init__(
+        self,
+        name: str = "Storysmith",
+        profile: str = "Novel Writer",
+        goal: str = "Create engaging and imaginative science fiction stories",
+        constraints: str = "Adhere to a structured narrative format, with vivid and engaging content",
+        language: str = "English",
+    ):
+        super().__init__()
+        self._init_actions([WriteDirectory(language=language)])
+        self.language = language
+
+    async def _think(self) -> None:
+        """Determine the next action to be taken by the role."""
+        logger.info(self.rc.state)
+        # logger.info(self,)
+        if self.rc.todo is None:
+            self._set_state(0)
+            return
+
+        if self.rc.state + 1 < len(self.states):
+            self._set_state(self.rc.state + 1)
+        else:
+            self.rc.todo = None
+
+    async def _handle_directory(self, titles: Dict) -> Message:
+        self.main_title = titles.get("title")
+        directory = f"{self.main_title}\n"
+        self.total_content += f"# {self.main_title}"
+        action_nodes = list()
+        # actions = list()
+        for first_dir in titles.get("directory"):
+            logger.info(f"================== {first_dir}")
+            action_nodes.append(ActionNode(
+                key=f"{first_dir}",
+                expected_type=str,
+                instruction="",
+                example=""))
+            key = list(first_dir.keys())[0]
+            directory += f"- {key}\n"
+            for second_dir in first_dir[key]:
+                directory += f"  - {second_dir}\n"
+        
+        self._init_actions([WriteContent(language=self.language, action_nodes=action_nodes)])
+        self.rc.todo = None
+        return Message(content=directory)
+
+    async def _act(self) -> Message:
+        """Perform an action as determined by the role.
+
+        Returns:
+            A message containing the result of the action.
+        """
+        todo = self.rc.todo
+        if type(todo) is WriteDirectory:
+            msg = self.rc.memory.get(k=1)[0]
+            self.topic = msg.content
+            resp = await todo.run(topic=self.topic)
+            logger.info(resp)
+            return await self._handle_directory(resp)
+        resp = await todo.run(topic=self.topic)
+        logger.info(resp)
+        if self.total_content != "":
+            self.total_content += "\n\n\n"
+        self.total_content += resp
+        return Message(content=resp, role=self.profile)
+
+    async def _react(self) -> Message:
+        """Execute the assistant's think and actions.
+
+        Returns:
+            A message containing the final result of the assistant's actions.
+        """
+        while True:
+            await self._think()
+            if self.rc.todo is None:
+                break
+            msg = await self._act()
+        root_path = TUTORIAL_PATH / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        logger.info(f"Write tutorial to {root_path}")
+        await File.write(root_path, f"{self.main_title}.md", self.total_content.encode('utf-8'))
+        return msg
+```
+
+
+
+效果：
+
+```markdown
+# 城市边缘：赛博朋克的未来幻想
+
+
+第一章: 引子：城市边缘的黑暗
+
+节1: 主角的背景介绍
+
+在一个被高楼大厦和闪烁的霓虹灯所包围的城市边缘，生活着一个名叫杰克的年轻人。杰克曾经是一名优秀的工程师，但在一次事故中失去了他的双腿。他被迫离开了他曾经熟悉的高科技公司，被遗忘在这个城市的边缘。
+
+节2: 主角的日常生活
+
+杰克现在过着贫困的生活，住在一个破旧的公寓里。他每天靠着做些零工来维持生计，但他的心中始终充满了对科技的渴望。每当他看到城市中那些飞行汽车和智能机器人时，他都感到无比的羡慕和失落。
+
+节3: 主角的追求
+
+杰克决定不再沉溺于自怜之中，他开始研究自己的假肢。他利用废弃的机械零件和电子设备，设计出了一套先进的仿生腿。这套仿生腿不仅能够让他重新行走，还具备了超越常人的速度和力量。
+
+杰克的成就引起了一家科技公司的注意。他们邀请杰克加入他们的团队，为他们开发更先进的人工智能技术。杰克终于有机会重新融入科技世界，实现自己的追求。
+
+然而，随着杰克深入研究人工智能，他逐渐发现了科技背后的黑暗。他发现这家公司正在利用人工智能来控制人们的思想和行为，以达到他们自己的目的。杰克决定揭露这一阴谋，与公司展开一场生死对决。
+
+...
+```
