@@ -2419,6 +2419,7 @@ await main()
    
 
 ## Task5 Homework： 使用ActionNode 实现NovelWriter
+完整代码：[chapter5_metagpt_actionNode](./code/agent101_chapter5_metagpt_actionNode.ipynb)
 
 基本复制TutorialAssistant 即可， 但可以修改几个地方
 
