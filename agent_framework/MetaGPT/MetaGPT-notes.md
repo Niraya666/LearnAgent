@@ -6,7 +6,7 @@
 - [Chapter 3](#chapter3)
 - [Chapter 4](#chapter4)
 - [Chapter 5](#chapter5)
-
+- [Chapter 6](#chapter6)
 # Chapter 1: Introduction 
 
 <https://docs.deepwisdom.ai/main/zh/guide/get_started/introduction.html>
@@ -2699,3 +2699,950 @@ class TutorialAssistant(Role):
 
 ...
 ```
+
+
+# <a id="chapter6"></a>Chapter 6: 订阅智能体进阶
+
+问题： 如何让role变得更通用；由于之前的订阅智能体局现在特定领域， 如Github Trending或是huggingface daily paper， 当数据源发生变化时， Role需要重写。
+
+思路：
+
+> 实现一个智能体，它可以爬取我们要求的任意网站，然后进行数据的分析，最后再总结；
+
+> 实现一个可以写订阅智能体代码的智能体，这个智能体可以浏览我们需要爬取的网页，写爬虫和网页信息提取的代码，生成Role，甚至根据我们的订阅需求，直接完整调用SubscriptionRunner，实现我们的订阅需求
+
+## 先写爬虫代码
+
+让大模型帮我们写爬虫代码： → 主要是需要解决html内容过长的问题，一是减少token消耗，二是防止上下文过长导致请求失败
+
+
+
+![截屏2024-01-22 15.02.58.png](./image/截屏2024-01-22%2015.02.58.png)
+<details>
+  <summary>浏览器自动化工具</summary>
+
+
+   by GPT-4
+
+   浏览器自动化工具，如Playwright，是一种高级的工具，用于编程方式控制浏览器。这些工具可以模拟用户在浏览器中的各种行为，如点击链接、填写表单、滚动页面等。Playwright 支持多种浏览器（例如 Chrome、Firefox、Safari），并能在不同操作系统上运行。
+
+   与使用诸如 aiohttp 这样的 HTTP 客户端库爬取网页相比，浏览器自动化工具有以下优势：
+
+   1. **JavaScript 渲染支持**：许多现代网站使用 JavaScript 动态生成内容。aiohttp 之类的库只能获取网站的原始 HTML，无法处理 JavaScript。而 Playwright 可以执行 JavaScript，获取动态生成的内容。
+
+   2. **模拟复杂交互**：Playwright 可以模拟诸如点击、拖拽、键盘输入等复杂用户交互，而 aiohttp 只能发送 HTTP 请求。
+
+   3. **自动处理 Web 功能**：Playwright 自动处理 cookies、会话、本地存储等，而使用 aiohttp 则需要手动管理这些。
+
+   4. **可视化调试**：Playwright 可以打开一个真实的浏览器窗口，让开发者直观看到脚本的执行情况，而 aiohttp 没有这种功能。
+
+   然而，Playwright 也有其不足之处：
+
+   - **性能开销较大**：启动一个完整的浏览器比仅发送 HTTP 请求要消耗更多资源。
+
+   - **复杂性更高**：编写和维护浏览器自动化脚本通常比简单的 HTTP 请求复杂。
+
+   总的来说，选择哪种工具取决于你的具体需求。**如果你需要处理复杂的网页交互或获取 JavaScript 动态生成的内容，Playwright 是一个好选择。**如果你只需要快速获取静态内容，aiohttp 或类似的 HTTP 客户端可能更合适。
+
+   Playwright 示例
+
+   这个示例将使用 Playwright 打开一个网页（比如 Google 主页），搜索一个词语，然后获取搜索结果。
+
+   ```python
+   from playwright.sync_api import sync_playwright
+   
+   def run(playwright):
+       browser = playwright.chromium.launch(headless=False)  # 打开浏览器
+       page = browser.new_page()  # 打开新标签页
+       page.goto("https://www.google.com")  # 访问 Google
+       page.type("input[name=q]", "Playwright")  # 在搜索框中输入 "Playwright"
+       page.press("input[name=q]", "Enter")  # 按下 Enter 键
+       page.wait_for_selector("h3")  # 等待搜索结果出现
+       titles = page.query_selector_all("h3")  # 获取所有搜索结果标题
+       for title in titles:
+           print(title.text_content())  # 打印每个标题的文本
+       browser.close()
+   
+   with sync_playwright() as playwright:
+       run(playwright)
+   ```
+</details>
+   这个脚本将启动一个浏览器窗口，自动执行搜索，并打印出搜索结果的标题。
+
+## 订阅助手代码分析用户需求——一句话就实现订阅
+
+通过ActionNode输出：
+
+```json
+{
+    "Cron Expression": "30 19 * * *",
+    "Crawler URL List": ["https://github.com/trending"],
+    "Page Content Extraction": "获取今日榜单信息",
+    "Crawl Post Processing": "推荐2~3个与LLM相关的仓库，并给出推荐理由",
+}
+```
+
+
+
+code
+
+```python
+from metagpt.actions.action_node import ActionNode
+from metagpt.actions.action import Action
+
+# 先写NODES
+LANGUAGE = ActionNode(
+    key="Language",
+    expected_type=str,
+    instruction="Provide the language used in the project, typically matching the user's requirement language.",
+    example="en_us",
+)
+
+
+CRON_EXPRESSION = ActionNode(
+    key="Cron Expression",
+    expected_type=str,
+    instruction="If the user requires scheduled triggering, please provide the corresponding 5-field cron expression. "
+    "Otherwise, leave it blank.",
+    example="",
+)
+
+
+CRAWLER_URL_LIST = ActionNode(
+    key="Crawler URL List",
+    expected_type=list[str],
+    instruction="List the URLs user want to crawl. Leave it blank if not provided in the User Requirement.",
+    example=["https://example1.com", "https://example2.com"],
+)
+
+
+PAGE_CONTENT_EXTRACTION = ActionNode(
+    key="Page Content Extraction",
+    expected_type=str,
+    instruction="Specify the requirements and tips to extract from the crawled web pages based on User Requirement.",
+    example="Retrieve the titles and content of articles published today.",
+)
+
+
+CRAWL_POST_PROCESSING = ActionNode(
+    key="Crawl Post Processing",
+    expected_type=str,
+    instruction="Specify the processing to be applied to the crawled content, such as summarizing today's news.",
+    example="Generate a summary of today's news articles.",
+)
+
+
+INFORMATION_SUPPLEMENT = ActionNode(
+    key="Information Supplement",
+    expected_type=str,
+    instruction="If unable to obtain the Cron Expression, prompt the user to provide the time to receive subscription "
+    "messages. If unable to obtain the URL List Crawler, prompt the user to provide the URLs they want to crawl. Keep it "
+    "blank if everything is clear",
+    example="",
+)
+
+
+NODES = [
+    LANGUAGE,
+    CRON_EXPRESSION,
+    CRAWLER_URL_LIST,
+    PAGE_CONTENT_EXTRACTION,
+    CRAWL_POST_PROCESSING,
+    INFORMATION_SUPPLEMENT,
+]
+
+
+PARSE_SUB_REQUIREMENTS_NODE = ActionNode.from_children("ParseSubscriptionReq", NODES)
+
+# 再写Action
+
+PARSE_SUB_REQUIREMENT_TEMPLATE = """
+### User Requirement
+{requirements}
+"""
+
+
+SUB_ACTION_TEMPLATE = """
+## Requirements
+Answer the question based on the provided context {process}. If the question cannot be answered, please summarize the context.
+
+## context
+{data}"
+"""
+
+
+class ParseSubRequirement(Action):
+    async def run(self, requirements):
+        requirements = "\n".join(i.content for i in requirements)
+        context = PARSE_SUB_REQUIREMENT_TEMPLATE.format(requirements=requirements)
+        node = await PARSE_SUB_REQUIREMENTS_NODE.fill(context=context, llm=self.llm)
+        return node
+```
+
+尝试：
+
+```python
+from metagpt.schema import Message
+await ParseSubRequirement().run([Message(
+        "从36kr创投平台https://pitchhub.36kr.com/financing-flash 爬取所有初创企业融资的信息，获取标题，链接， 时间，总结今天的融资新闻，然后在晚上七点半送给我"
+    )])
+```
+
+效果
+
+```shell
+{
+    "Language": "zh_cn",
+    "Cron Expression": "0 30 19 * * ?",
+    "Crawler URL List": [
+        "https://pitchhub.36kr.com/financing-flash"
+    ],
+    "Page Content Extraction": "爬取所有今天发布的初创企业融资信息，包括标题，链接和时间。",
+    "Crawl Post Processing": "生成今天的融资新闻总结。",
+    "Information Supplement": ""
+}
+```
+
+
+
+## 让Agent自动写爬虫代码
+
+让LLM根据需求以及看到的网页结构，对应的写出爬虫代码；
+
+因为上下文限制，LLM只需要获得网页的基本框架即可：
+
+> 我们可以先对网页内容做一下简化，因为对元素进行定位一般用css selector就够了，所以我们可以主要提供html的class属性信息，另外可以将html转成css表达式和对应的内容提供给llm，从而减少token的消耗
+
+````python
+import asyncio
+from metagpt.actions.action import Action
+from metagpt.schema import Message
+from metagpt.tools.web_browser_engine import WebBrowserEngine
+from metagpt.utils.common import CodeParser
+from metagpt.utils.parse_html import _get_soup
+
+def get_outline(page):
+    soup = _get_soup(page.html)
+    outline = []
+
+    def process_element(element, depth):
+        name = element.name
+        if not name:
+            return
+        if name in ["script", "style"]:
+            return
+
+        element_info = {"name": element.name, "depth": depth}
+
+        if name in ["svg"]:
+            element_info["text"] = None
+            outline.append(element_info)
+            return
+
+        element_info["text"] = element.string
+        # Check if the element has an "id" attribute
+        if "id" in element.attrs:
+            element_info["id"] = element["id"]
+
+        if "class" in element.attrs:
+            element_info["class"] = element["class"]
+        outline.append(element_info)
+        for child in element.children:
+            process_element(child, depth + 1)
+
+    for element in soup.body.children:
+        process_element(element, 1)
+
+    return outline
+
+PROMPT_TEMPLATE = """Please complete the web page crawler parse function to achieve the User Requirement. The parse \
+function should take a BeautifulSoup object as input, which corresponds to the HTML outline provided in the Context.
+
+```python
+from bs4 import BeautifulSoup
+
+# only complete the parse function
+def parse(soup: BeautifulSoup):
+    ...
+    # Return the object that the user wants to retrieve, don't use print
+```
+
+## User Requirement
+{requirement}
+
+## Context
+
+The outline of html page to scrabe is show like below:
+
+```tree
+{outline}
+```
+"""
+
+class WriteCrawlerCode(Action):
+    async def run(self, requirement):
+        requirement: Message = requirement[-1]
+        data = requirement.instruct_content.dict()
+        urls = data["Crawler URL List"]
+        query = data["Page Content Extraction"]
+
+        codes = {}
+        for url in urls:
+            codes[url] = await self._write_code(url, query)
+        return "\n".join(f"# {url}\n{code}" for url, code in codes.items())
+
+    async def _write_code(self, url, query):
+        page = await WebBrowserEngine().run(url)
+        outline = get_outline(page)
+        outline = "\n".join(
+            f"{' '*i['depth']}{'.'.join([i['name'], *i.get('class', [])])}: {i['text'] if i['text'] else ''}"
+            for i in outline
+        )
+        code_rsp = await self._aask(PROMPT_TEMPLATE.format(outline=outline, requirement=query))
+        code = CodeParser.parse_code(block="", text=code_rsp)
+        return code
+````
+
+try:
+
+```python
+
+# try
+
+from metagpt.actions.action_node import ActionNode
+cls = ActionNode.create_model_class(
+    "ActionModel", {
+        "Cron Expression": (str, ...),
+        "Crawler URL List": (list[str], ...),
+        "Page Content Extraction": (str, ...),
+        "Crawl Post Processing": (str, ...),
+    }
+)
+
+data = {
+    "Cron Expression": "0 30 19 * * *",
+    "Crawler URL List": ["https://pitchhub.36kr.com/financing-flash"],
+    "Page Content Extraction": "从36kr创投平台爬取所有初创企业融资的信息，获取标题，链接， 时间。",
+    "Crawl Post Processing": "总结今天的融资新闻。",
+}
+# asyncio.run(WriteCrawlerCode().run([Message(instruct_content=cls(**data))]))
+await WriteCrawlerCode().run([Message(instruct_content=cls(**data))])
+```
+
+效果：
+
+````shell
+
+```python
+from bs4 import BeautifulSoup
+from typing import List, Dict
+
+def parse(soup: BeautifulSoup) -> List[Dict[str, str]]:
+    result = []
+    items = soup.select('div.newsflash-catalog-flow div.css-xle9x')
+    for item in items:
+        title = item.select_one('a.title').get_text(strip=True)
+        link = item.select_one('a.title')['href']
+        time = item.select_one('span.time').get_text(strip=True)
+        result.append({
+            'title': title,
+            'link': link,
+            'time': time
+        })
+    return result
+```
+
+The `parse` function uses BeautifulSoup's `select` and `select_one` methods to find the necessary information from the HTML structure. It first selects all the divs that contain the information for each financing event. Then, for each of these divs, it selects the title, link, and time, and appends them as a dictionary to the result list. The `get_text(strip=True)` method is used to get the text content of an element and remove any leading or trailing whitespace. The `['href']` is used to get the href attribute of the a element, which is the link.
+# https://pitchhub.36kr.com/financing-flash\nfrom bs4 import BeautifulSoup\nfrom typing import List, Dict\n\ndef parse(soup: BeautifulSoup) -> List[Dict[str, str]]:\n    result = []\n    items = soup.select('div.newsflash-catalog-flow div.css-xle9x')\n    for item in items:\n        title = item.select_one('a.title').get_text(strip=True)\n        link = item.select_one('a.title')['href']\n        time = item.select_one('span.time').get_text(strip=True)\n        result.append({\n            'title': title,\n            'link': link,\n            'time': time\n        })\n    return result\n
+````
+
+
+
+## Team: 订阅助手与爬虫工程师的协作
+<details>
+   <summary>code</summary>
+
+
+   ````python
+   import datetime
+   import sys
+   from typing import Optional
+   from uuid import uuid4
+   
+   from aiocron import crontab
+   from metagpt.actions import UserRequirement
+   from metagpt.actions.action import Action
+   from metagpt.actions.action_node import ActionNode
+   from metagpt.roles import Role
+   from metagpt.schema import Message
+   from metagpt.tools.web_browser_engine import WebBrowserEngine
+   from metagpt.utils.common import CodeParser, any_to_str
+   from metagpt.utils.parse_html import _get_soup
+   from pytz import BaseTzInfo
+   from metagpt.logs import logger
+   
+   # 先写NODES
+   LANGUAGE = ActionNode(
+       key="Language",
+       expected_type=str,
+       instruction="Provide the language used in the project, typically matching the user's requirement language.",
+       example="en_us",
+   )
+   
+   CRON_EXPRESSION = ActionNode(
+       key="Cron Expression",
+       expected_type=str,
+       instruction="If the user requires scheduled triggering, please provide the corresponding 5-field cron expression. "
+       "Otherwise, leave it blank.",
+       example="",
+   )
+   
+   CRAWLER_URL_LIST = ActionNode(
+       key="Crawler URL List",
+       expected_type=list[str],
+       instruction="List the URLs user want to crawl. Leave it blank if not provided in the User Requirement.",
+       example=["https://example1.com", "https://example2.com"],
+   )
+   
+   PAGE_CONTENT_EXTRACTION = ActionNode(
+       key="Page Content Extraction",
+       expected_type=str,
+       instruction="Specify the requirements and tips to extract from the crawled web pages based on User Requirement.",
+       example="Retrieve the titles and content of articles published today.",
+   )
+   
+   CRAWL_POST_PROCESSING = ActionNode(
+       key="Crawl Post Processing",
+       expected_type=str,
+       instruction="Specify the processing to be applied to the crawled content, such as summarizing today's news.",
+       example="Generate a summary of today's news articles.",
+   )
+   
+   INFORMATION_SUPPLEMENT = ActionNode(
+       key="Information Supplement",
+       expected_type=str,
+       instruction="If unable to obtain the Cron Expression, prompt the user to provide the time to receive subscription "
+       "messages. If unable to obtain the URL List Crawler, prompt the user to provide the URLs they want to crawl. Keep it "
+       "blank if everything is clear",
+       example="",
+   )
+   
+   NODES = [
+       LANGUAGE,
+       CRON_EXPRESSION,
+       CRAWLER_URL_LIST,
+       PAGE_CONTENT_EXTRACTION,
+       CRAWL_POST_PROCESSING,
+       INFORMATION_SUPPLEMENT,
+   ]
+   
+   PARSE_SUB_REQUIREMENTS_NODE = ActionNode.from_children("ParseSubscriptionReq", NODES)
+   
+   PARSE_SUB_REQUIREMENT_TEMPLATE = """
+   ### User Requirement
+   {requirements}
+   """
+   
+   SUB_ACTION_TEMPLATE = """
+   ## Requirements
+   Answer the question based on the provided context {process}. If the question cannot be answered, please summarize the context.
+   
+   ## context
+   {data}"
+   """
+   
+   PROMPT_TEMPLATE = """Please complete the web page crawler parse function to achieve the User Requirement. The parse \
+   function should take a BeautifulSoup object as input, which corresponds to the HTML outline provided in the Context.
+   
+   ```python
+   from bs4 import BeautifulSoup
+   
+   # only complete the parse function
+   def parse(soup: BeautifulSoup):
+       ...
+       # Return the object that the user wants to retrieve, don't use print
+   ```
+   
+   ## User Requirement
+   {requirement}
+   
+   ## Context
+   
+   The outline of html page to scrabe is show like below:
+   
+   ```tree
+   {outline}
+   ```
+   """
+   
+   # 辅助函数: 获取html css大纲视图
+   def get_outline(page):
+       soup = _get_soup(page.html)
+       outline = []
+   
+       def process_element(element, depth):
+           name = element.name
+           if not name:
+               return
+           if name in ["script", "style"]:
+               return
+   
+           element_info = {"name": element.name, "depth": depth}
+   
+           if name in ["svg"]:
+               element_info["text"] = None
+               outline.append(element_info)
+               return
+   
+           element_info["text"] = element.string
+           # Check if the element has an "id" attribute
+           if "id" in element.attrs:
+               element_info["id"] = element["id"]
+   
+           if "class" in element.attrs:
+               element_info["class"] = element["class"]
+           outline.append(element_info)
+           for child in element.children:
+               process_element(child, depth + 1)
+   
+       for element in soup.body.children:
+           process_element(element, 1)
+   
+       return outline
+   
+   # 触发器：crontab
+   class CronTrigger:
+       def __init__(self, spec: str, tz: Optional[BaseTzInfo] = None) -> None:
+           segs = spec.split(" ")
+           if len(segs) == 6:
+               spec = " ".join(segs[1:])
+           self.crontab = crontab(spec, tz=tz)
+   
+       def __aiter__(self):
+           return self
+   
+       async def __anext__(self):
+           await self.crontab.next()
+           return Message(datetime.datetime.now().isoformat())
+   
+   # 写爬虫代码的Action
+   class WriteCrawlerCode(Action):
+       async def run(self, requirement):
+           requirement: Message = requirement[-1]
+           data = requirement.instruct_content.dict()
+           urls = data["Crawler URL List"]
+           query = data["Page Content Extraction"]
+   
+           codes = {}
+           for url in urls:
+               codes[url] = await self._write_code(url, query)
+           return "\n".join(f"# {url}\n{code}" for url, code in codes.items())
+   
+       async def _write_code(self, url, query):
+           page = await WebBrowserEngine().run(url)
+           outline = get_outline(page)
+           outline = "\n".join(
+               f"{' '*i['depth']}{'.'.join([i['name'], *i.get('class', [])])}: {i['text'] if i['text'] else ''}"
+               for i in outline
+           )
+           code_rsp = await self._aask(PROMPT_TEMPLATE.format(outline=outline, requirement=query))
+           code = CodeParser.parse_code(block="", text=code_rsp)
+           return code
+   
+   # 分析订阅需求的Action
+   class ParseSubRequirement(Action):
+       async def run(self, requirements):
+           requirements = "\n".join(i.content for i in requirements)
+           context = PARSE_SUB_REQUIREMENT_TEMPLATE.format(requirements=requirements)
+           node = await PARSE_SUB_REQUIREMENTS_NODE.fill(context=context, llm=self.llm)
+           return node
+   
+   # 运行订阅智能体的Action
+   class RunSubscription(Action):
+       async def run(self, msgs):
+           from metagpt.roles.role import Role
+           from metagpt.subscription import SubscriptionRunner
+   
+           code = msgs[-1].content
+           req = msgs[-2].instruct_content.dict()
+           urls = req["Crawler URL List"]
+           process = req["Crawl Post Processing"]
+           spec = req["Cron Expression"]
+           SubAction = self.create_sub_action_cls(urls, code, process)
+           SubRole = type("SubRole", (Role,), {})
+           role = SubRole()
+           role._init_actions([SubAction])
+           runner = SubscriptionRunner()
+   
+           async def callback(msg):
+               print(msg)
+   
+           await runner.subscribe(role, CronTrigger(spec), callback)
+           await runner.run()
+   
+       @staticmethod
+       def create_sub_action_cls(urls: list[str], code: str, process: str):
+           modules = {}
+           for url in urls[::-1]:
+               code, current = code.rsplit(f"# {url}", maxsplit=1)
+               name = uuid4().hex
+               module = type(sys)(name)
+               exec(current, module.__dict__)
+               modules[url] = module
+   
+           class SubAction(Action):
+               async def run(self, *args, **kwargs):
+                   pages = await WebBrowserEngine().run(*urls)
+                   if len(urls) == 1:
+                       pages = [pages]
+   
+                   data = []
+                   for url, page in zip(urls, pages):
+                       data.append(getattr(modules[url], "parse")(page.soup))
+                   return await self.llm.aask(SUB_ACTION_TEMPLATE.format(process=process, data=data))
+   
+           return SubAction
+   
+   # 定义爬虫工程师角色
+   class CrawlerEngineer(Role):
+       name: str = "John"
+       profile: str = "Crawling Engineer"
+       goal: str = "Write elegant, readable, extensible, efficient code"
+       constraints: str = "The code should conform to standards like PEP8 and be modular and maintainable"
+   
+       def __init__(self, **kwargs) -> None:
+           super().__init__(**kwargs)
+   
+           self._init_actions([WriteCrawlerCode])
+           self._watch([ParseSubRequirement])
+   
+   # 定义订阅助手角色
+   class SubscriptionAssistant(Role):
+       """Analyze user subscription requirements."""
+   
+       name: str = "Grace"
+       profile: str = "Subscription Assistant"
+       goal: str = "analyze user subscription requirements to provide personalized subscription services."
+       constraints: str = "utilize the same language as the User Requirement"
+   
+       def __init__(self, **kwargs) -> None:
+           super().__init__(**kwargs)
+   
+           self._init_actions([ParseSubRequirement, RunSubscription])
+           self._watch([UserRequirement, WriteCrawlerCode])
+   
+       async def _think(self) -> bool:
+           cause_by = self.rc.history[-1].cause_by
+           if cause_by == any_to_str(UserRequirement):
+               state = 0
+           elif cause_by == any_to_str(WriteCrawlerCode):
+               state = 1
+   
+           if self.rc.state == state:
+               self.rc.todo = None
+               return False
+           self._set_state(state)
+           return True
+   
+       async def _act(self) -> Message:
+           logger.info(f"{self._setting}: ready to {self.rc.todo}")
+           response = await self.rc.todo.run(self.rc.history)
+           msg = Message(
+               content=response.content,
+               instruct_content=response.instruct_content,
+               role=self.profile,
+               cause_by=self.rc.todo,
+               sent_from=self,
+           )
+           self.rc.memory.add(msg)
+           return msg
+   
+   if __name__ == "__main__":
+       import asyncio
+       from metagpt.team import Team
+   
+       team = Team()
+       team.hire([SubscriptionAssistant(), CrawlerEngineer()])
+       team.run_project("从36kr创投平台https://pitchhub.36kr.com/financing-flash爬取所有初创企业融资的信息，获取标题，链接， 时间，总结今天的融资新闻，然后在14:55发送给我")
+       asyncio.run(team.run())
+   ````
+</details>
+
+
+## 结课作业
+
+>  根据“2. 通用订阅智能体设计思路”中提供的思路1，尝试实现思路1，**即使用llm提取出需要的信息而不是写爬虫代码**。
+>
+> 目前，订阅智能体是通过RunSubscription运行的，即RunSubscription这个action，不仅创建了订阅智能体代码，并启动了SubscriptionRunner，这会让我们的RunSubscription一直无法退出，**请尝试将二者分离，即从RunSubscription分离出AddSubscriptionTask的action，并且让SubscriptionRunner单独运行**（可以是同一个进程也可以是不同的进程。
+
+
+<details>
+   <summary>测试用例</summary>
+
+
+   从36kr创投平台<https://pitchhub.36kr.com/financing-flash>  。获取所有初创企业融资的信息，获取标題，镇接，时间，总结今天的融资新闻，然后在14:55发送给我”
+
+   从 https://huggingface.co/papers 获取今天推荐的论文的标题和链接，整理成表格，分析这些论文主要主题，然后在下午5点:26分发送给我
+
+   从 <https://www.qbitai.com/category/资讯> 获取量子位今天推送的文章，总结今天的主要资讯，然后在每天下午5点34分发送给我
+
+   从 <https://www.jiqizhixin.com> 获取机器之心今天推送的文章，总结今天的主要资讯。然后在每天下午5点38分发送给我
+</details>
+
+
+
+
+思路：
+
+1. **通用的网页信息获取**：
+
+   不采用爬虫的方式， 那需要使用`playwright`的方式获取网页信息， 但网页信息中内容特别多，不适合直接塞给LLM（上下文长度限制+大量无用信息）；
+
+   对于不同网页， 不同需求，既然不能使用写爬虫脚本的方式， ~~也就意味着LLM提取信息的prompt也需要根据需求改变~~。
+
+   对此， 还是使用课程中的get_outline 方法获取网页基本大纲（但也仅限大纲）
+
+   
+
+   PAGE_CONTENT_EXTRACTION > PROMPT_WRITOR > LLM_EXTRACT > POST-PORCESS 
+
+   
+
+   因此构造一个新的action `WebInfoExtracting`和对应新的role `InfoExtractionEngineer`
+
+   以取代之前的`WriteCrawlerCode` 和 `CrawlerEngineer`
+    <details>
+       <summary>Add a prompt-writing ActionNode</summary>
+   
+
+      (并没有什么用)
+
+      ```python
+      PROMPT_WRITER = ActionNode(
+          key="Generic Prompt Template for Data Extraction",
+          expected_type=str,
+          instruction=(
+              "Create a prompt template for extracting specific information based on user requirements. "
+              "This template should be designed to handle variable inputs, where the user can specify "
+              "their specific extraction needs (such as types of data to be extracted) and the text to be processed. "
+              "The prompt should be structured to guide the LLM in identifying and extracting the relevant information "
+              "from the given text in a consistent and error-free manner. Define placeholders within the prompt for "
+              "user-defined variables like 'data requirements' and 'text to process'."
+          ),
+          example=(
+              "Template: \"Given the user requirement: {data_requirements}, extract the relevant information from "
+              "the following text: {text_to_process}. "
+              "in a concise and accurate manner.\""
+              "\n\nUsage Example: \n- data_requirements: 'startup names, funding details, and main business focus' "
+              "\n- text_to_process: '[Text from web page containing startup funding information]' "
+              
+          ),
+      )
+      ```
+    </details>
+
+    <details>
+       <summary>WebInfoExtracting</summary>
+
+      ```python
+      class WebInfoExtracting(Action):
+          """
+          Class to extract information from web pages.
+          """
+      
+          async def run(self, requirement):
+              """
+              Main method to run the action for extracting information from a web page.
+      
+              :param requirement: The requirement object containing the details for information extraction.
+              :return: Extracted information.
+              """
+              requirement: Message = requirement[-1]
+              data = requirement.instruct_content.dict()
+              urls = data["Crawler URL List"]
+              query = data["Page Content Extraction"]
+              prompt_template = data['Generic Prompt Template for Data Extraction']
+              # print(prompt_template)
+              extract_info = ""
+      
+              outline = await self._get_web_outline(urls[0])
+              context_len = num_tokens_from_string(outline, "cl100k_base")
+      
+              if context_len >= 4096 * 0.7:
+                  outlines = self._chunking(outline)
+              else:
+                  outlines = [outline]
+              i = 0
+              for outline_chunk in outlines:
+                  print("==========================")
+                  print("extract chunk ", i)
+                  info = await self._extract_web_info(prompt_template, query, outline_chunk)
+                  extract_info+=info
+                  extract_info+="\n"
+                  i+=1
+              print("total_extraction: ", extract_info)
+      
+              return extract_info
+      
+          def _chunking(self, text, chunk_size=2800):
+              """
+              Split a string into chunks of a specific size.
+      
+              :param text: The text to be chunked.
+              :param chunk_size: The size of each chunk.
+              :return: List of text chunks.
+              """
+              return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+      
+          async def _get_web_outline(self, url):
+              """
+              Get the outline of a web page given its URL.
+      
+              :param url: The URL of the web page.
+              :return: The formatted outline of the web page.
+              """
+              page = await WebBrowserEngine().run(url)
+              outline = get_outline(page)
+              # outline = filter_none(outline)
+              # outline = remove_non_title_class(outline)
+      
+              formatted_outline = "\n".join(
+                  f"{' ' * i['depth']}{'.'.join([i['name'], *i.get('class', [])])}: {i['text'] if i['text'] else ''}"
+                  for i in outline
+              )
+              return formatted_outline
+      
+          async def _extract_web_info(self, prompt_template, data_requirements, text_to_process):
+              """
+              Extract information from a web page using a given template.
+      
+              :param prompt_template: The template to format the extraction query.
+              :param data_requirements: Requirements for the data extraction.
+              :param text_to_process: The text to be processed for information extraction.
+              :return: Extracted information.
+              """
+              response = await self._aask(prompt_template.format(text_to_process=text_to_process, data_requirements=data_requirements))
+              return CodeParser.parse_code(block="", text=response)
+      ```
+
+      只是增加了chunking
+
+    </details>
+
+    <details>
+       <summary>InfoExtractinEngineer</summary>
+
+   
+
+      ```python
+      class InfoExtractionEngineer(Role):
+          name: str = "Alice"
+          profile: str = "Information Extraction Engineer"
+          goal: str = "Efficiently extract and process web information while ensuring data accuracy and relevance, DONOT WRITE PYTHON CODE!"
+          constraints: str = "Extraction must be precise, relevant, and adhere to legal and ethical standards. Avoid over-extraction and ensure data privacy and security."
+      
+          def __init__(self, **kwargs) -> None:
+              super().__init__(**kwargs)
+      
+              # 初始化动作 WebInfoExtracting
+              self._init_actions([WebInfoExtracting])
+              # 观察需求的解析过程
+              self._watch([ParseSubRequirement])
+      ```
+
+      （原封不动）
+
+    </details>
+
+   再修改`RunSubscription` 中的`create_sub_action_cls `
+
+   
+
+   效果：
+
+   ```python
+   - title: 睿普康完成过亿元A轮融资
+     content: 近日，国内专业从事卫星通信、蜂窝通信及电源管理芯片研发企业合肥睿普康集成电路有限公司（简称“睿普康”）成功完成A轮融资，融资总额过亿元。本轮投资方包括深投控、阿玛拉、合肥海恒等专业机构。睿普康创立于2019年，是专业的卫星通信、蜂窝通信及电源管理芯片研发企业，专注于天地一体互联互通终端芯片及物联网芯片研发，所研发的芯片主要应用于汽车通信、智能手机、物联网、智能电网、智慧家庭等领域。
+   - title: Accent Therapeutics获7500万美元C轮融资，研发新型小分子精准癌症疗法
+     content: Accent正在开发针对新型和已知但尚未得到最佳治疗的高影响力肿瘤靶点的疗法。
+   - title: HEPHAISTOS-Pharma获200万欧元种子轮融资，研发下一代癌症免疫疗法
+     content: ONCO-Boost是HEPHAISTOS-Pharma的首款产品，它是一种天然的TLR4激动剂，能刺激患者自身的免疫系统。
+   ...
+   ```
+
+   
+
+2. **让SubscriptionRunner单独运行**
+    <details>
+       <summary>基本想法</summary>
+
+      ```python
+      # 从RunSubscription分离出AddSubscriptionTask的action
+      class AddSubscriptionTask(Action):
+          async def run(self, role, trigger, callback):
+              runner = SubscriptionRunner()
+              await runner.subscribe(role, trigger, callback)
+              await runner.run()
+      class RunSubscription(Action):
+          async def run(self, msgs):
+              from metagpt.roles.role import Role
+              from metagpt.subscription import SubscriptionRunner
+              code = msgs[-1].content
+              req = msgs[-2].instruct_content.dict()
+              urls = req["Crawler URL List"]
+              process = req["Crawl Post Processing"]
+              spec = req["Cron Expression"]
+      
+              # print("code: ", code)
+              # print("req: ", req)
+      
+              # 创建 CronTrigger
+              trigger = self.create_trigger(spec)
+      
+              # 创建并运行 AddSubscriptionTask
+              print("===AddSubscriptionTask===")
+              add_subscription_task = AddSubscriptionTask()
+              await add_subscription_task.run(role, trigger, self.callback)
+      
+          def create_role(self, action_cls):
+              SubRole = type("SubRole", (Role,), {})
+              role = SubRole()
+              role._init_actions([action_cls])
+              return role
+      
+          def create_trigger(self, spec):
+              return CronTrigger(spec)
+      
+          async def callback(self, msg):
+              print(msg)
+      
+          @staticmethod
+          def create_sub_action_cls(urls: list[str], code: str, process: str):
+              modules = {}
+              for url in urls[::-1]:
+                  code, current = code.rsplit(f"# {url}", maxsplit=1)
+                  name = uuid4().hex
+                  module = type(sys)(name)
+                  exec(current, module.__dict__)
+                  modules[url] = module
+      
+              class SubAction(Action):
+                  async def run(self, *args, **kwargs):
+                      pages = await WebBrowserEngine().run(*urls)
+                      if len(urls) == 1:
+                          pages = [pages]
+      
+                      data = []
+                      for url, page in zip(urls, pages):
+                          data.append(getattr(modules[url], "parse")(page.soup))
+                      return await self.llm.aask(SUB_ACTION_TEMPLATE.format(process=process, data=data))
+      
+              return SubAction
+      ```
+    </details>
+
+完整代码：[code](./code/task6/main.py)
+
+### Task6 总结：
+
+
