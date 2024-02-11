@@ -3644,5 +3644,12 @@ The `parse` function uses BeautifulSoup's `select` and `select_one` methods to f
 完整代码：[code](./code/task6/main.py)
 
 ### Task6 总结：
+好像跑通了，但又好像没有。反正不像是个agent。
+第一版的问题：
+* **单纯使用LLM总结网页确实不太好**， 不论是成本上考虑，还是效果上考虑，都不如爬虫代码的效果；以至于提取很多没有用的信息，可以考虑在后面加一个校对的角色，负责清洗和判断 InfoExtractionEngineer的输出。再者，使用爬虫脚本的另一大好处是可复用性， 至少相同的网页只需要在第一次写一次即可，之后可重复利用。
+
+其他同学思路：
+* team中只保留`SubscriptionAssistant`， 并将网页信息获取的action写到`RunSubscription`的 `SubAction` 中。同时需要修改对应的`think()`.
+
 
 
