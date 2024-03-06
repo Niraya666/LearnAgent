@@ -1,6 +1,6 @@
 # Function Calling (tools using)
 
-
+> 最近，OpenAI已经废弃了"函数"的使用，转而采用"工具"。现在，在配置Chat Completions API时，使用tools参数来提供模型可能生成JSON输入的函数列表。这一更改还在API的响应对象中引入了一个新的finish_reason，称为"tool_calls"，表明之前的function_call完成原因已被废弃。从使用"函数"转向"工具"的转变，表明OpenAI意图拓宽可以集成到模型中的功能范围，潜在地为更复杂的交互铺平道路，比如创建一个多代理系统，不同的OpenAI托管工具或代理可以相互作用
 
 ## What is function calling 
 
@@ -1011,8 +1011,170 @@ Sequence design is more challenging than analysis, but error correction can comp
 Larger training sets benefit design tasks more.
 Future research directions include exploring chaining smaller models for performance improvement and using an LLM architecture involving both an encoder and decoder for direct sequence comparison.
 ```
+In detail: [openai_function_call_quickstart](./code/openai_function_call_quickstart.ipynb)
+
 
 ## function calling via open source LLMs
+
+目前支持tool call 的open source LLMs 主要有
+
+- qwent
+
+- chatGLM-6B
+
+- [NexusRaven-13B](https://github.com/nexusflowai/NexusRaven/)
+
+- [gorilla-openfunctions-v1](https://huggingface.co/gorilla-llm/gorilla-openfunctions-v1)
+
+
+
+支持以openai API 形式调用tools call 的推理框架有
+
+- [Xinference](https://inference.readthedocs.io/en/latest/models/model_abilities/tools.html) 
+
+
+
+### 快速上手
+
+环境
+
+```python
+%pip install -U -q  xinference[transformers] openai langchain
+!pip install typing-extensions --upgrade
+```
+
+```python
+## Start Local Server
+
+!nohup xinference-local  > xinference.log 2>&1 &
+```
+
+模型加载
+
+```python
+!xinference launch -u my-llm --model-name chatglm3 --size-in-billions 6 --model-format pytorch
+```
+
+```python
+## Interact with the running model
+import openai
+
+messages=[
+    {
+        "role": "user",
+        "content": "Who are you?"
+    }
+]
+
+client = openai.Client(api_key="empty", base_url=f"http://0.0.0.0:9997/v1")
+client.chat.completions.create(
+    model="my-llm",
+    messages=messages,
+)
+
+# ChatCompletion(id='chatda6056ac-da01-11ee-b92e-0242ac1c000c', choices=[Choice(finish_reason='stop', index=0, logprobs=None, message=ChatCompletionMessage(content="I am an AI assistant named ChatGLM3-6B, which is developed based on the language model jointly trained by Tsinghua University KEG Lab and Zhipu AI Company in 2023. My job is to provide appropriate answers and support to users' questions and requests.", role='assistant', function_call=None, tool_calls=None))], created=1709541198, model='my-llm', object='chat.completion', system_fingerprint=None, usage=CompletionUsage(completion_tokens=-1, prompt_tokens=-1, total_tokens=-1))
+```
+
+
+
+without tool using
+
+```python
+completion = client.chat.completions.create(
+    model="my-llm",
+    messages=[{"role": "user", "content": "What is the weather like in London?"}]
+)
+# print(handle_response(completion))
+print(completion.choices[0].message.content)
+
+"""
+London has a temperate climate with warm summers and cool winters. The average temperature during the summer months (June to August) is around 18°C, while the winter months (December to February) are around 6°C. The city experiences heavy rainfall throughout the year, with an annual precipitation of around 350 mm. The average precipitation on the weekends is around 40 mm. London's cloudy skies are common throughout the year, but they are especially prevalent in December and January.
+
+"""
+```
+
+tool using
+
+```python
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_weather",
+            "description": "Get the current weather in a given location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The city and state, e.g. San Francisco, CA",
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"]},
+                },
+                "required": ["location"],
+            },
+        },
+    }
+]
+
+def get_completion(messages, model="my-llm", temperature=0, max_tokens=500, tools=None, tool_choice=None):
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        tools=tools,
+        tool_choice=tool_choice
+    )
+    return response.choices[0].message
+```
+
+```python
+# Defines a dummy function to get the current weather
+def get_current_weather(location, unit="fahrenheit"):
+    """Get the current weather in a given location"""
+    weather = {
+        "location": location,
+        "temperature": "50",
+        "unit": unit,
+    }
+
+    return json.dumps(weather)
+
+messages = []
+messages.append({"role": "user", "content": "What's the weather like in Boston!"})
+assistant_message = get_completion(messages, tools=tools, tool_choice="auto")
+assistant_message = json.loads(assistant_message.model_dump_json())
+assistant_message["content"] = str(assistant_message["tool_calls"][0]["function"])
+
+#a temporary patch but this should be handled differently
+# remove "function_call" from assistant message
+del assistant_message["function_call"]
+
+messages.append(assistant_message)
+
+
+# get the weather information to pass back to the model
+weather = get_current_weather(messages[1]["tool_calls"][0]["function"]["arguments"])
+
+messages.append({"role": "tool",
+                 "tool_call_id": assistant_message["tool_calls"][0]["id"],
+                 "name": assistant_message["tool_calls"][0]["function"]["name"],
+                 "content": weather})
+
+
+final_response = get_completion(messages, tools=tools)
+
+final_response
+
+"""
+ChatCompletionMessage(content='The current weather in Boston is 50 degrees Fahrenheit.', role='assistant', function_call=None, tool_calls=[])
+"""
+```
+
+In detail: [tool-calling by using xinference&qwen](./code/xinference_functioncalling_test.ipynb)
 
 
 
