@@ -1200,9 +1200,9 @@ function calling by openAI API:
 
 [Fine tuning on synthetic function-calling data](https://github.com/openai/openai-cookbook/blob/main/examples/Fine_tuning_for_function_calling.ipynb)
 
-**[How to use functions with a knowledge base](https://cookbook.openai.com/examples/how_to_call_functions_for_knowledge_retrieval)**
+[How to use functions with a knowledge base](https://cookbook.openai.com/examples/how_to_call_functions_for_knowledge_retrieval)
 
-
+[Function prompts: How is OpenAI formatting its prompt for function calls?](https://hamel.dev/notes/llm/openai/func_template.html)
 
 function calling via open source model 
 
