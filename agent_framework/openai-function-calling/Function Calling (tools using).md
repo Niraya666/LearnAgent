@@ -1204,6 +1204,9 @@ function calling by openAI API:
 
 [Function prompts: How is OpenAI formatting its prompt for function calls?](https://hamel.dev/notes/llm/openai/func_template.html)
 
+[ActionWeaver: AI application framework that makes function calling with LLM easier](https://github.com/TengHu/ActionWeaver?tab=readme-ov-file#actionweaver)
+
+
 function calling via open source model 
 
 **[Anyscale Endpoints: JSON Mode and Function calling Features](https://www.anyscale.com/blog/anyscale-endpoints-json-mode-and-function-calling-features)**
